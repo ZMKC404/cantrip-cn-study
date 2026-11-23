@@ -1,0 +1,1692 @@
+<!doctype html>
+<!--
+  胶囊堆 · Tossable Tag Pile
+  Cantrip 的一条交互实现：https://cantrip.cn/i/physics-pills
+  原作：Kelly Milligan（@kellymilligannz）  https://x.com/kellymilligannz/status/2095011696180171077
+  这是 Cantrip 照着原作重写的实现，不是原作者的源码。
+
+  怎么用
+    · 用浏览器直接打开这个文件就能玩，不用构建。
+    · <script type="module"> 里依次是：Cantrip 的 Demo 运行时（mountDemo 等，
+      负责缩放画板、注入样式、管理事件），然后是这个 Demo 本身
+      （defineDemo({ width, height, css, setup })），最后一行把它挂到 #demo 上。
+    · 搬进自己的项目：交互都在 setup() 里，ctx.root 是画板元素；css 里的
+      :scope 会被替换成 .d-physics-pills。不需要演示脚本的话，script/reset 可以删掉。
+
+  依赖
+    · 无。原生 JS + CSS，离线也能打开。
+
+  源文件：src/demos/physics-pills.ts 与 src/demos/_kit.ts（构建时生成）。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>胶囊堆 · Cantrip</title>
+<style>
+/* 页面：画板居中，四周留白。 */
+html, body { height: 100%; }
+body {
+  margin: 0;
+  display: grid;
+  place-items: safe center;
+  padding: 16px;
+  box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+/* 画板的底边本来就裁在内容中间的 Demo（bleed）：#demo 铺满窗口，裁口落在窗口底边。 */
+body.bleed { display: block; padding: 0; }
+body.bleed #demo { height: 100vh; height: 100dvh; }
+#demo { position: relative; width: 100%; overflow: hidden; }
+
+/* 基础重置（节选自 Tailwind preflight，站点上 Demo 就是在它之上画的）。 */
+@layer reset {
+  *, ::before, ::after { box-sizing: border-box; margin: 0; padding: 0; border: 0 solid; }
+  h1, h2, h3, h4, h5, h6 { font-size: inherit; font-weight: inherit; }
+  a { color: inherit; text-decoration: inherit; }
+  ol, ul, menu { list-style: none; }
+  img, svg, video, canvas { display: block; vertical-align: middle; }
+  img, video { max-width: 100%; height: auto; }
+  button, input, select, textarea {
+    font: inherit; letter-spacing: inherit; color: inherit;
+    border-radius: 0; background-color: transparent; opacity: 1;
+  }
+  button { cursor: pointer; }
+  ::placeholder { opacity: 1; color: color-mix(in oklab, currentcolor 50%, transparent); }
+  [hidden]:where(:not([hidden="until-found"])) { display: none !important; }
+}
+
+/* 画板：固定尺寸，由运行时按容器等比缩放。 */
+.demo-artboard {
+  position: absolute;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #111;
+  text-align: left;
+  -webkit-font-smoothing: antialiased;
+}
+.demo-artboard[data-theme="dark"] { color: #f5f5f5; }
+.demo-artboard :where(button, input) { font: inherit; color: inherit; }
+.demo-artboard:not([inert]) { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.demo-artboard :where(input, textarea, [contenteditable]) { -webkit-user-select: text; user-select: text; }
+.demo-artboard[tabindex="-1"]:focus { outline: none; }
+</style>
+<script>
+(() => {
+  const base = '/cantrip-cn-study';
+  const withBase = value => {
+    if (value instanceof URL) value = value.pathname + value.search + value.hash;
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return value;
+    if (value === base || value.startsWith(base + "/")) return value;
+    return base + (value === "/" ? "/" : value);
+  };
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    if (typeof input === "string" || input instanceof URL) {
+      const url = withBase(input);
+      const method = init?.method ?? "GET";
+      if (method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(url, init);
+    }
+    if (input instanceof Request && new URL(input.url).origin === location.origin) {
+      const url = withBase(new URL(input.url).pathname + new URL(input.url).search + new URL(input.url).hash);
+      if (input.method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(new Request(url, input), init);
+    }
+    return nativeFetch(input, init);
+  };
+  for (const method of ["pushState", "replaceState"]) {
+    const original = history[method].bind(history);
+    history[method] = (state, title, url) => original(state, title, withBase(url));
+  }
+})();
+</script></head>
+<body>
+<div id="demo"></div>
+<script type="module">
+/* 这个 Demo 没用 Motion。运行时里只有演示脚本的假光标会调用 animate，
+   导出版不跑演示脚本，所以放一个占位，省掉整个依赖。 */
+const animate = () => {
+  throw new Error("animate() is only used by the scripted walkthrough");
+};
+
+/* ==================================================================
+   Cantrip 的 Demo 运行时（src/demos/_kit.ts）
+   ================================================================== */
+
+/* The runtime every live demo shares.
+
+   A demo is authored once, at a fixed artboard size, and shown in two places:
+   shrunk into a feed card, where it plays a scripted walkthrough on a loop
+   with a fake cursor (the way a screen recording would), and blown up on the
+   detail stage, where the same walkthrough runs until the visitor reaches in
+   and takes over. The artboard is scaled with a transform rather than being
+   re-laid out, so a demo looks identical at 260px and at 700px. */
+
+const defineDemo = (demo) => demo;
+
+/** Tag for the `css` field - identity, it just marks the string for editors. */
+const css = String.raw;
+
+const springs = {
+  snappy: { type: "spring", duration: 0.3, bounce: 0.15 },
+  smooth: { type: "spring", duration: 0.5, bounce: 0.1 },
+  bouncy: { type: "spring", duration: 0.55, bounce: 0.35 },
+};
+
+const ease = {
+  out: [0.23, 1, 0.32, 1],
+  inOut: [0.77, 0, 0.175, 1],
+  drawer: [0.32, 0.72, 0, 1],
+};
+
+function h(
+  tag,
+  props = {},
+  ...children
+) {
+  const el = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (key === "class") el.className = value;
+    else el.setAttribute(key, value);
+  }
+  el.append(...children);
+  return el;
+}
+
+/* ------------------------------------------------------------------ */
+/* Mounting                                                            */
+/* ------------------------------------------------------------------ */
+
+const CANCELLED = Symbol("cancelled");
+const injected = new Set();
+
+function inject(id, source) {
+  if (!source || injected.has(id)) return;
+  injected.add(id);
+  const style = document.createElement("style");
+  style.dataset.demo = id;
+  style.textContent = source.replaceAll(":scope", `.d-${id}`);
+  document.head.append(style);
+}
+
+const CURSOR_SVG = `<svg viewBox="0 0 20 24" width="20" height="24" aria-hidden="true"><path d="M2.2 1.6v17.6l4.5-4.2 3 6.6 3.1-1.4-3-6.4h6.3z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+
+function mountDemo(
+  frame,
+  id,
+  demo,
+  { live = false, maxScale = Infinity, focus = false, autoplay = true } = {},
+) {
+  inject(id, demo.css);
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // A phone has no arrow: there the walkthrough is drawn as a fingertip.
+  const touch = matchMedia("(hover: none) and (pointer: coarse)").matches;
+  const mount = new AbortController();
+  const listeners = new Set();
+
+  const root = document.createElement("div");
+  root.className = `demo-artboard d-${id}`;
+  root.dataset.theme = demo.theme ?? "light";
+  root.style.width = `${demo.width}px`;
+  root.style.height = `${demo.height}px`;
+  if (demo.background) root.style.background = demo.background;
+  if (!live) root.inert = true;
+  frame.append(root);
+
+  /* A walkthrough presses its buttons with .click(): those clicks are the
+     demo's business only. Bubbling on, one reached the feed card around a
+     demo and opened its detail by itself. The demo's own listeners - on the
+     artboard or anything inside it - have all run by the time this does. */
+  for (const type of ["click", "dblclick", "pointerdown", "pointerup", "mousedown", "mouseup", "keydown", "keyup", "input", "change"]) {
+    root.addEventListener(type, (e) => e.isTrusted || e.stopPropagation(), { signal: mount.signal });
+  }
+
+  let scale = 1;
+
+  /* ---- pause plumbing: timers and animations all hang off this ---- */
+  let paused = false;
+  let frozen = [];
+  const onPause = new Set();
+  const onResume = new Set();
+
+  let script = new AbortController();
+
+  const cancelled = () => Object.assign(new Error("cancelled"), { [CANCELLED]: true });
+
+  /* A timeout whose countdown stops while the demo is paused. It belongs to
+     the mount, not to a script run - only unmount or `cancel` clears it. */
+  const later = (fn, ms) => {
+    if (mount.signal.aborted) return () => {};
+    let remaining = ms;
+    let started = 0;
+    let timer = 0;
+    const run = () => {
+      started = performance.now();
+      timer = window.setTimeout(fire, remaining);
+    };
+    const halt = () => {
+      clearTimeout(timer);
+      remaining -= performance.now() - started;
+    };
+    const cancel = () => {
+      clearTimeout(timer);
+      onPause.delete(halt);
+      onResume.delete(run);
+      mount.signal.removeEventListener("abort", cancel);
+    };
+    const fire = () => {
+      cancel();
+      fn();
+    };
+    onPause.add(halt);
+    onResume.add(run);
+    mount.signal.addEventListener("abort", cancel);
+    if (!paused) run();
+    return cancel;
+  };
+
+  const wait = (ms) =>
+    new Promise((resolve, reject) => {
+      const signal = script.signal;
+      if (signal.aborted) return reject(cancelled());
+      const abort = () => {
+        cancel();
+        reject(cancelled());
+      };
+      const cancel = later(() => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      }, ms);
+      signal.addEventListener("abort", abort);
+    });
+
+  /** Runs a numeric tween that honours pause and script cancellation. */
+  const tween = (duration, ease, onUpdate) =>
+    new Promise((resolve, reject) => {
+      const signal = script.signal;
+      if (signal.aborted) return reject(cancelled());
+      /* Reduced motion jumps straight to the end. Motion would defer even a
+         zero-length tween's one update to the next frame, after `finished`
+         has settled - so land it here, or a move resolves short of its
+         target and its onMove listeners never hear where it ended. */
+      if (reduced) {
+        onUpdate(1);
+        return resolve();
+      }
+      const controls = animate(0, 1, {
+        duration,
+        ease: ease,
+        onUpdate,
+      });
+      const halt = () => controls.pause();
+      const run = () => controls.play();
+      const abort = () => {
+        controls.stop();
+        cleanup();
+        reject(cancelled());
+      };
+      const cleanup = () => {
+        onPause.delete(halt);
+        onResume.delete(run);
+        signal.removeEventListener("abort", abort);
+      };
+      onPause.add(halt);
+      onResume.add(run);
+      signal.addEventListener("abort", abort);
+      if (paused) controls.pause();
+      controls.finished.then(() => {
+        cleanup();
+        resolve();
+      });
+    });
+
+  const local = (e) => {
+    const r = root.getBoundingClientRect();
+    return {
+      // Layout size, not demo.width/height: a bleed artboard grows taller.
+      x: (e.clientX - r.left) / (r.width / root.offsetWidth || 1),
+      y: (e.clientY - r.top) / (r.height / root.offsetHeight || 1),
+    };
+  };
+
+  const center = (el) => {
+    const r = el.getBoundingClientRect();
+    return local({ clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 });
+  };
+
+  /* ---- the fake cursor ---- */
+  const pointer = document.createElement("div");
+  pointer.className = touch ? "demo-cursor is-touch" : "demo-cursor";
+  if (!touch) pointer.innerHTML = CURSOR_SVG;
+  if (autoplay) root.append(pointer);
+
+  const pos = { x: demo.width * 0.72, y: demo.height * 0.82 };
+  let pressed = false;
+  const moveListeners = new Set();
+  // Where the hotspot sits inside the drawing: the arrow's tip, the dot's centre.
+  const tip = touch ? { x: 11, y: 11 } : { x: 2, y: 1.5 };
+  const place = () => {
+    /* In a card the cursor scales with the picture, like a screen recording
+       (and so does the poster still, shot at 2× a card). Blown up on a
+       stage it stays the size of a real one. */
+    const k = (pressed ? (touch ? 0.8 : 0.86) : 1) / (live ? Math.max(1, scale) : 1);
+    pointer.style.transform = `translate(${pos.x - tip.x}px, ${pos.y - tip.y}px) scale(${k})`;
+    pointer.classList.toggle("is-pressed", pressed);
+  };
+  const paint = () => {
+    place();
+    moveListeners.forEach((fn) => fn({ x: pos.x, y: pos.y }));
+  };
+
+  /* Contain-fit the artboard into whatever box it was given, up to
+     `maxScale`: centred, or for a `bleed` demo pinned to the top and grown
+     down to the box's floor (see `Demo.bleed`).
+     Layout size is what the observer sees, so a FLIP transform on an
+     ancestor doesn't make the demo re-scale mid-flight.
+     Its edges land on whole device pixels. Between two, the artboard's own
+     background and a layer drawn over it are each smoothed on their own,
+     and the first showed through as a hairline - a light line along a dark
+     window. So the box is snapped: its size by a hair of non-uniform
+     scale, its corner by a sub-pixel nudge measured against the frame. */
+  const hang = demo.bleed === "bottom";
+  root.style.left = root.style.top = "0";
+  root.style.transformOrigin = "0 0";
+  const fit = () => {
+    const w = frame.clientWidth;
+    const hgt = frame.clientHeight;
+    if (!w || !hgt) return;
+    scale = Math.min(w / demo.width, hgt / demo.height, maxScale * (demo.stretch ?? 1));
+    const dpr = devicePixelRatio || 1;
+    const snap = (v) => Math.round(v * dpr) / dpr;
+    const bw = snap(demo.width * scale);
+    const bh = snap(demo.height * scale);
+    // Where the frame's padding box starts on screen, so the nudge lands the corner on the grid.
+    const r = frame.getBoundingClientRect();
+    const ox = r.left + frame.clientLeft;
+    const oy = r.top + frame.clientTop;
+    const x = snap(ox + (w - bw) / 2) - ox;
+    const sy = bh / demo.height;
+    const rest = hgt - (demo.reach ?? Infinity) * sy;
+    const y = hang ? (rest > 0 ? snap(oy + rest / 2) - oy : 0) : snap(oy + (hgt - bh) / 2) - oy;
+    // Grown in whole artboard px past the box's floor; the frame clips the rest.
+    if (hang) root.style.height = `${Math.max(demo.height, Math.ceil((hgt - y) / sy))}px`;
+    root.style.transform = `translate(${x}px, ${y}px) scale(${bw / demo.width}, ${sy})`;
+    place();
+  };
+  const ro = new ResizeObserver(fit);
+  ro.observe(frame);
+  fit();
+
+  /* ---- surface: the colour the page around the artboard should be ---- */
+  let surface = null;
+  const surfaceListeners = new Set();
+  const frameBg = frame.style.backgroundColor;
+  const setSurface = (color, tone) => {
+    const next = color ? { color, tone: tone ?? demo.theme ?? "light" } : null;
+    if (next?.color === surface?.color && next?.tone === surface?.tone) return;
+    surface = next;
+    // The frame's own letterbox follows too, wherever it's mounted.
+    frame.style.backgroundColor = next ? next.color : frameBg;
+    surfaceListeners.forEach((fn) => fn(next));
+  };
+  const resolve = (t) => ("x" in t ? t : center(t));
+
+  const cursor = {
+    get x() {
+      return pos.x;
+    },
+    get y() {
+      return pos.y;
+    },
+    show(at) {
+      if (at) Object.assign(pos, resolve(at));
+      paint();
+      pointer.classList.add("is-visible");
+    },
+    hide() {
+      pointer.classList.remove("is-visible");
+    },
+    async move(to, opts = {}) {
+      const target = resolve(to);
+      const end = { x: target.x + (opts.offset?.x ?? 0), y: target.y + (opts.offset?.y ?? 0) };
+      const start = { ...pos };
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 0.5) return;
+      /* A hand doesn't travel in a ruler-straight line - bow the path a
+         little to one side, proportional to the distance covered. */
+      const bow = dist * 0.12;
+      const ctrl = {
+        x: start.x + dx / 2 - (dy / dist) * bow,
+        y: start.y + dy / 2 + (dx / dist) * bow,
+      };
+      const duration = opts.duration ?? Math.min(0.95, Math.max(0.38, dist / 700));
+      pointer.classList.add("is-visible");
+      await tween(duration, [0.45, 0, 0.2, 1], (t) => {
+        const u = 1 - t;
+        pos.x = u * u * start.x + 2 * u * t * ctrl.x + t * t * end.x;
+        pos.y = u * u * start.y + 2 * u * t * ctrl.y + t * t * end.y;
+        paint();
+      });
+    },
+    async press() {
+      pressed = true;
+      paint();
+      await wait(90);
+    },
+    async release() {
+      pressed = false;
+      paint();
+      await wait(60);
+    },
+    async click(fn) {
+      await cursor.press();
+      fn?.();
+      await cursor.release();
+    },
+    onMove(fn) {
+      moveListeners.add(fn);
+      return () => moveListeners.delete(fn);
+    },
+  };
+
+  const frameLoops = new Set();
+  let rafId = 0;
+  let last = 0;
+  const tick = (t) => {
+    const dt = Math.min(64, t - (last || t));
+    last = t;
+    frameLoops.forEach((fn) => fn(dt, t));
+    rafId = requestAnimationFrame(tick);
+  };
+  const startFrames = () => {
+    if (!rafId && frameLoops.size && !paused) {
+      last = 0;
+      rafId = requestAnimationFrame(tick);
+    }
+  };
+  const stopFrames = () => {
+    cancelAnimationFrame(rafId);
+    rafId = 0;
+  };
+  onPause.add(stopFrames);
+  onResume.add(startFrames);
+
+  const ctx = {
+    root,
+    live,
+    reduced,
+    signal: mount.signal,
+    wait,
+    later,
+    cursor,
+    local,
+    center,
+    frame(fn) {
+      frameLoops.add(fn);
+      startFrames();
+    },
+    setSurface,
+  };
+
+  const instance = demo.setup(ctx) ?? {};
+  if (autoplay) root.append(pointer); // keep the cursor above whatever setup built
+
+  /* Focusable by script and by a click on its bare surface, but no extra
+     tab stop - unless the demo made it one itself. */
+  if (live && focus) {
+    if (!root.hasAttribute("tabindex")) root.tabIndex = -1;
+    root.focus({ preventScroll: true, focusVisible: false });
+  }
+
+  /* While the walkthrough plays, the demo's live regions - a transcript, a
+     message's status, a reader's caption - would read the fake visitor's
+     every step aloud. They're silenced for the script and given back the
+     moment the demo is the visitor's. */
+  const hushed = new Map();
+  const hush = (on) => {
+    if (on) {
+      root.querySelectorAll("[aria-live], [role=status], [role=log], [role=alert], [role=timer], [role=marquee]").forEach((el) => {
+        if (hushed.has(el)) return;
+        hushed.set(el, el.getAttribute("aria-live"));
+        el.setAttribute("aria-live", "off");
+      });
+    } else {
+      hushed.forEach((was, el) => (was === null ? el.removeAttribute("aria-live") : el.setAttribute("aria-live", was)));
+      hushed.clear();
+    }
+  };
+
+  /* ---- script loop ---- */
+  let state = "idle";
+  const setState = (next) => {
+    state = next;
+    frame.dataset.demoState = next;
+    if (live) hush(next === "script");
+    listeners.forEach((fn) => fn(next));
+  };
+
+  /* wait()/tween() read the *current* controller when called, so a new run
+     must not start until the old one has actually left its script - or a
+     pass still awaiting something outside the kit would pick up the new
+     signal and keep running alongside it. */
+  let running = Promise.resolve();
+  let pendingReplay = null;
+  let destroyed = false;
+
+  /* How far a real mouse has hovered since this run started - see the
+     takeover below. */
+  let travelled = 0;
+  let prev = null;
+  /* Whether hovering may take over at all. A replay is asked for with the
+     mouse, which then moves off the button it pressed: that isn't reaching
+     in. Hover waits until the mouse has rested a second, or has left the
+     stage and come back. */
+  let armed = true;
+  let disarm = () => {};
+
+  const loop = () => (running = run());
+
+  const run = async () => {
+    if (!instance.script) return;
+    script = new AbortController();
+    const signal = script.signal;
+    /* Every run, a replay included, gets the full hover grace again. Left
+       over, the travel that took the last one over would end this one on
+       the first nudge, and a stale `prev` would add one big jump. */
+    travelled = 0;
+    prev = null;
+    setState("script");
+    cursor.show();
+    while (!signal.aborted) {
+      try {
+        await instance.script(ctx);
+        await wait(200);
+      } catch (error) {
+        if ((error)?.[CANCELLED] || signal.aborted) break;
+        console.error(`[demo:${id}]`, error);
+        break;
+      }
+      if (!signal.aborted) instance.reset?.();
+    }
+  };
+
+  const stopScript = () => {
+    script.abort();
+    pressed = false;
+    cursor.hide();
+  };
+
+  const replay = () => {
+    stopScript();
+    instance.reset?.();
+    disarm();
+    // Wait for the cancelled pass to unwind (bounded, in case it's stuck).
+    // Only the latest request starts a run, however fast it's pressed.
+    const token = (pendingReplay = {});
+    Promise.race([running, new Promise((r) => setTimeout(r, 1000))]).then(() => {
+      if (!destroyed && pendingReplay === token) {
+        pendingReplay = null;
+        loop();
+      }
+    });
+  };
+
+  /* On stage the walkthrough runs until the visitor reaches in. A stray
+     mouse already resting over the stage when it opens shouldn't count, so
+     hovering has to travel a little before it's a takeover; a press, a key
+     or Tabbing onto a control always is.
+     What they reach for is what they saw. A press, a touch, the wheel or a
+     key stops the script and lets go of its fake press, and everything else
+     stays as it is: the switch the walkthrough left on is still on, so the
+     first tap turns it off. A mouse that merely wandered in has aimed at
+     nothing, and gets the demo back at rest. */
+  if (live) {
+    /* A press is hit-tested against the picture from before the takeover.
+       If the takeover moved things - a reset, or a demo's own hook - a press
+       on a thing keeps it, even if it moved: that's what the visitor aimed
+       at. A press on empty space, or on something taken away, goes to
+       whatever is under the pointer now: the row that sprang back into the
+       gap it was pressed in. */
+    const retarget = (e) => {
+      const was = e.target;
+      const hit = document.elementFromPoint(e.clientX, e.clientY);
+      if (!hit || hit === was || !root.contains(hit)) return;
+      if (root.contains(was) && !was.contains(hit)) return;
+      e.stopImmediatePropagation();
+      hit.dispatchEvent(new PointerEvent(e.type, e));
+    };
+    /* A touch is hit-tested once, before its pointerover - which is already
+       the takeover - so its pointerdown still carries the old target. */
+    let stale = null;
+    /* A thumb that lands on the stage on its way to scrolling the page is no
+       visitor reaching in: the browser claims the gesture for panning and
+       cancels the pointer. A cancel that soon after a touch takeover, with
+       nothing else in between, gives the walkthrough back. */
+    let touched = null;
+    const takeover = (how, e) => {
+      if (state !== "script") return;
+      touched = e instanceof PointerEvent && e.pointerType !== "mouse" ? { id: e.pointerId, at: e.timeStamp } : null;
+      stopScript();
+      /* The walkthrough's pressed look goes with its hand. A real press puts
+         its own back on: the demo's handlers see this event after this. */
+      root.querySelectorAll(".is-pressed").forEach((el) => el.classList.remove("is-pressed"));
+      let moved = true;
+      if (instance.takeover) instance.takeover(how);
+      else if (how === "hover") instance.reset?.();
+      else moved = false;
+      setState("live");
+      if (moved && e instanceof PointerEvent && (e.type === "pointerdown" || e.pointerType !== "mouse")) stale = e.pointerId;
+    };
+    const capture = { signal: mount.signal, capture: true };
+    frame.addEventListener(
+      "pointerdown",
+      (e) => {
+        takeover("press", e);
+        if (stale !== e.pointerId) return;
+        stale = null;
+        retarget(e);
+      },
+      capture,
+    );
+    frame.addEventListener(
+      "pointercancel",
+      (e) => {
+        const t = touched;
+        touched = null;
+        if (t && t.id === e.pointerId && e.timeStamp - t.at < 400 && state === "live") replay();
+      },
+      capture,
+    );
+    // A lift, or anything else the visitor does, makes the takeover theirs for good.
+    frame.addEventListener("pointerup", () => (touched = null), capture);
+    frame.addEventListener("keydown", () => (touched = null), capture);
+    // Tab only passes through: arriving on a control is the focusin below.
+    frame.addEventListener("keydown", (e) => e.key !== "Tab" && takeover("press"), capture);
+    // Scrolling inside the stage is reaching in too - don't fight a wheel.
+    frame.addEventListener("wheel", (e) => takeover("press", e), { ...capture, passive: true });
+
+    /* A keyboard reaches in by Tabbing onto a control - its keydown fired
+       outside, so only the focus arrives here. That includes the artboard
+       itself, for a demo that made it the tab stop. A script focusing its
+       own field is no visitor, though, nor is a page focusing the artboard
+       so keys reach it: only focus that lands on the heels of a Tab counts. */
+    let tabbed = -Infinity;
+    document.addEventListener("keydown", (e) => e.key === "Tab" && (tabbed = e.timeStamp), capture);
+    frame.addEventListener("focusin", (e) => e.timeStamp - tabbed < 150 && takeover("press"), capture);
+
+    /* After a replay, hover is held off until the mouse rests for a second
+       (any move, anywhere, restarts the count) or leaves the stage. */
+    let rest = 0;
+    const settle = () => {
+      clearTimeout(rest);
+      rest = window.setTimeout(() => (armed = true), 1000);
+    };
+    disarm = () => {
+      armed = false;
+      settle();
+    };
+    document.addEventListener("pointermove", (e) => !armed && e.pointerType === "mouse" && settle(), capture);
+    mount.signal.addEventListener("abort", () => clearTimeout(rest));
+
+    /* Until then the script owns the demo, so real hover input is stopped
+       here on its way down and the demo's own handlers never fight the fake
+       cursor. Whatever tips it into a takeover is let through: the demo has
+       run reset() (or its takeover()) by the time it sees that event. */
+    for (const type of ["pointermove", "pointerover", "pointerout", "pointerenter", "pointerleave"]) {
+      frame.addEventListener(
+        type,
+        (e) => {
+          /* Leaving the stage breaks the trail - coming back in elsewhere
+             isn't travel. Reset here rather than in a bubble listener, which
+             the stopPropagation below would skip even on the frame itself. */
+          if (type === "pointerleave" && e.target === frame) {
+            prev = null;
+            armed = true;
+          }
+          if (state !== "script") return;
+          /* Touch and pen only hover the stage on their way to reaching in. Their
+             leaving is no reach - it's the tail of a touch the page took for a
+             scroll, arriving just after the walkthrough was given back. */
+          if (e.pointerType !== "mouse") {
+            if (type !== "pointerout" && type !== "pointerleave") return takeover("press", e);
+          }
+          // Held off, the trail starts over from wherever the mouse is once it isn't.
+          else if (type === "pointermove" && !armed) prev = null;
+          else if (type === "pointermove") {
+            const p = { x: e.clientX, y: e.clientY };
+            if (prev) travelled += Math.hypot(p.x - prev.x, p.y - prev.y);
+            prev = p;
+            if (travelled > 90) return takeover("hover", e);
+          }
+          e.stopPropagation();
+        },
+        capture,
+      );
+    }
+    // Compatibility mouse events trail their pointer twins, which have already
+    // decided on any takeover - while the script still owns it, they just stop.
+    for (const type of ["mousemove", "mouseover", "mouseout", "mouseenter", "mouseleave"]) {
+      frame.addEventListener(type, (e) => state === "script" && e.stopPropagation(), capture);
+    }
+  }
+
+  if (autoplay && !reduced) loop();
+  else setState(live ? "live" : "idle");
+
+  return {
+    get state() {
+      return state;
+    },
+    pause() {
+      if (paused) return;
+      paused = true;
+      root.classList.add("is-paused");
+      onPause.forEach((fn) => fn());
+      /* Freeze whatever is mid-flight too - WAAPI, CSS transitions, Motion's
+         accelerated tweens. Only running ones, so resume never replays a
+         finished animation. */
+      frozen = root.getAnimations({ subtree: true }).filter((a) => a.playState === "running");
+      frozen.forEach((a) => a.pause());
+    },
+    resume() {
+      if (!paused) return;
+      paused = false;
+      root.classList.remove("is-paused");
+      frozen.forEach((a) => a.playState === "paused" && a.play());
+      frozen = [];
+      onResume.forEach((fn) => fn());
+    },
+    replay,
+    destroy() {
+      destroyed = true;
+      stopScript();
+      mount.abort();
+      stopFrames();
+      frameLoops.clear();
+      ro.disconnect();
+      instance.destroy?.();
+      root.remove();
+    },
+    onState(fn) {
+      listeners.add(fn);
+    },
+    onSurface(fn) {
+      surfaceListeners.add(fn);
+      fn(surface);
+    },
+  };
+}
+
+/* ==================================================================
+   Demo：physics-pills（src/demos/physics-pills.ts）
+   ================================================================== */
+
+/* A pile of plain pills and discs under real (if tiny) rigid-body physics:
+   capsules and discs, a sequential-impulse solver with split-impulse position
+   correction, and a soft mouse joint for grabbing. Two blurred piles behind
+   the live one give it depth of field; fast bodies smear with motion blur. */
+
+/* The original's frame is 1054 × 720; at 480 wide that's 328 tall, the
+   floor a hairline 9px above the bottom edge. */
+const W = 480;
+const H = 328;
+const FLOOR = H - 9;
+const CEIL = -36; // just out of view: a hard throw comes back instead of vanishing
+const INK = "#333533";
+const LABELS = ["动效", "排版", "交互", "插画", "图标", "品牌", "配色", "原型", "字体", "布局", "文案", "图表"];
+const PILL_R = 9; // the original's pills: 18px thick, 70-90 long; a phone grabs with a wider hit area
+
+const G = 1500; // px/s²
+const HZ = 180; // solver substeps per second
+const ITER = 8;
+const PITER = 4;
+const FRICTION = 0.6;
+const BOUNCE = 0.28;
+const SLOP = 0.4;
+const SPLIT = 0.25;
+const MAX_V = 2600;
+
+const REAL = ["vx", "vy", "w"];
+const PSEUDO = ["px", "py", "pw"];
+
+function rng(seed) {
+  return () => {
+    seed |= 0;
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function makeBody(x, y, a, hl, r, label = "") {
+  const len = 2 * hl;
+  const m = (len * 2 * r + Math.PI * r * r) / 400;
+  const ii = 1 / ((m * ((len + 2 * r) ** 2 + (2 * r) ** 2)) / 12);
+  return { x, y, a, vx: 0, vy: 0, w: 0, px: 0, py: 0, pw: 0, hl, r, m, im: 1 / m, ii, label, lx: x, ly: y, la: a };
+}
+
+/* ---------------------------------------------------------------- */
+/* World                                                             */
+/* ---------------------------------------------------------------- */
+
+class World {
+  bodies = [];
+  joint = null;
+  constructor(
+    floor,
+    inset = 0,
+  ) {
+    this.floor = floor;
+    this.inset = inset;
+  }
+
+   contacts = [];
+
+   add(a, b, nx, ny, cx, cy, depth) {
+    const rax = cx - a.x;
+    const ray = cy - a.y;
+    const rbx = b ? cx - b.x : 0;
+    const rby = b ? cy - b.y : 0;
+    // effective mass along a direction (dx, dy) at the contact
+    const mass = (dx, dy) => {
+      const ra = rax * dy - ray * dx;
+      const rb = rbx * dy - rby * dx;
+      return 1 / (a.im + a.ii * ra * ra + (b ? b.im + b.ii * rb * rb : 0));
+    };
+    const c = { a, b, nx, ny, rax, ray, rbx, rby, depth, mn: mass(nx, ny), mt: mass(-ny, nx), jn: 0, jt: 0, jp: 0, bounce: 0 };
+    const vn = this.rel(c, REAL);
+    c.bounce = vn < -140 ? -BOUNCE * vn : 0;
+    this.contacts.push(c);
+  }
+
+  /* Relative velocity of a over b at the contact, along the normal, or the tangent when `t`. */
+   rel(c, [X, Y, A], t = false) {
+    const { a, b } = c;
+    let vx = a[X] - a[A] * c.ray;
+    let vy = a[Y] + a[A] * c.rax;
+    if (b) {
+      vx -= b[X] - b[A] * c.rby;
+      vy -= b[Y] + b[A] * c.rbx;
+    }
+    return t ? -vx * c.ny + vy * c.nx : vx * c.nx + vy * c.ny;
+  }
+
+   apply(c, j, nx, ny, [X, Y, A]) {
+    const { a, b } = c;
+    const ix = nx * j;
+    const iy = ny * j;
+    a[X] += ix * a.im;
+    a[Y] += iy * a.im;
+    a[A] += (c.rax * iy - c.ray * ix) * a.ii;
+    if (b) {
+      b[X] -= ix * b.im;
+      b[Y] -= iy * b.im;
+      b[A] -= (c.rbx * iy - c.rby * ix) * b.ii;
+    }
+  }
+
+   collide() {
+    this.contacts.length = 0;
+    const bs = this.bodies;
+    for (const a of bs) {
+      const c = Math.cos(a.a) * a.hl;
+      const s = Math.sin(a.a) * a.hl;
+      for (const [ex, ey] of a.hl ? [[a.x - c, a.y - s], [a.x + c, a.y + s]] : [[a.x, a.y]]) {
+        const d = this.floor - ey;
+        if (d < a.r) this.add(a, null, 0, -1, ex, this.floor, a.r - d);
+        const lo = this.inset + a.r;
+        const hi = W - this.inset - a.r;
+        if (ey < CEIL + a.r) this.add(a, null, 0, 1, ex, CEIL, CEIL + a.r - ey);
+        if (ex < lo) this.add(a, null, 1, 0, this.inset, ey, lo - ex);
+        if (ex > hi) this.add(a, null, -1, 0, W - this.inset, ey, ex - hi);
+      }
+    }
+    for (let i = 0; i < bs.length; i++) {
+      for (let j = i + 1; j < bs.length; j++) this.pair(bs[i], bs[j]);
+    }
+  }
+
+  /* Capsule against capsule (a disc is a capsule with no core). Apart, the
+     closest points between two segments in a plane always include an end
+     of one of them, so testing each end against the other core finds every
+     contact - two of them when the tags lie along each other, which is what
+     lets one rest on another. Once the cores cross, or lie on top of each
+     other, those tests point the wrong way and would push the tags on
+     through: then the pair is separated along whichever axis - across one
+     core or the other - needs the least travel. */
+   pair(a, b) {
+    const reach = a.hl + a.r + b.hl + b.r;
+    if (Math.abs(a.x - b.x) > reach || Math.abs(a.y - b.y) > reach) return;
+    const ac = Math.cos(a.a) * a.hl;
+    const as = Math.sin(a.a) * a.hl;
+    const bc = Math.cos(b.a) * b.hl;
+    const bs = Math.sin(b.a) * b.hl;
+    const A0x = a.x - ac, A0y = a.y - as, A1x = a.x + ac, A1y = a.y + as;
+    const B0x = b.x - bc, B0y = b.y - bs, B1x = b.x + bc, B1y = b.y + bs;
+    const sum = a.r + b.r;
+
+    const x = a.hl && b.hl ? cross(A0x, A0y, A1x, A1y, B0x, B0y, B1x, B1y) : null;
+    // Deep: crossed, or one core lying almost on the other.
+    const near = Math.min(
+      seg(A0x, A0y, B0x, B0y, B1x, B1y), seg(A1x, A1y, B0x, B0y, B1x, B1y),
+      seg(B0x, B0y, A0x, A0y, A1x, A1y), seg(B1x, B1y, A0x, A0y, A1x, A1y),
+    );
+    if (x || near < Math.min(a.r, b.r) * 0.35) {
+      let best = Infinity, nx = 0, ny = -1;
+      const axes = [];
+      if (a.hl) axes.push([-Math.sin(a.a), Math.cos(a.a)]);
+      if (b.hl) axes.push([-Math.sin(b.a), Math.cos(b.a)]);
+      const dcx = a.x - b.x, dcy = a.y - b.y;
+      const dl = Math.hypot(dcx, dcy);
+      if (dl > 1e-4) axes.push([dcx / dl, dcy / dl]);
+      for (const [ux, uy] of axes) {
+        const pa = [A0x * ux + A0y * uy, A1x * ux + A1y * uy];
+        const pb = [B0x * ux + B0y * uy, B1x * ux + B1y * uy];
+        const aLo = Math.min(...pa) - a.r, aHi = Math.max(...pa) + a.r;
+        const bLo = Math.min(...pb) - b.r, bHi = Math.max(...pb) + b.r;
+        // push a toward whichever side of b takes less travel
+        const up = bHi - aLo; // move a along +u
+        const down = aHi - bLo; // move a along -u
+        const d = Math.min(up, down);
+        if (d < best) {
+          best = d;
+          [nx, ny] = up < down ? [ux, uy] : [-ux, -uy];
+        }
+      }
+      if (best <= 0) return;
+      this.add(a, b, nx, ny, x ? x.x : (a.x + b.x) / 2, x ? x.y : (a.y + b.y) / 2, best);
+      return;
+    }
+
+    const found = []; // nx, ny, cx, cy, depth
+    const test = (px, py, s0x, s0y, s1x, s1y, flip) => {
+      // p on one core, q the closest point on the other; normal points b → a
+      const q = closest(px, py, s0x, s0y, s1x, s1y);
+      const sign = flip ? -1 : 1;
+      const dx = (px - q.x) * sign;
+      const dy = (py - q.y) * sign;
+      const d = Math.hypot(dx, dy);
+      if (d >= sum || d < 1e-6) return;
+      const cx = (px + q.x) / 2;
+      const cy = (py + q.y) / 2;
+      for (const f of found) {
+        if (Math.hypot(f[2] - cx, f[3] - cy) < 3) {
+          if (sum - d > f[4]) f.splice(0, 5, dx / d, dy / d, cx, cy, sum - d);
+          return;
+        }
+      }
+      found.push([dx / d, dy / d, cx, cy, sum - d]);
+    };
+    test(A0x, A0y, B0x, B0y, B1x, B1y, false);
+    if (a.hl) test(A1x, A1y, B0x, B0y, B1x, B1y, false);
+    test(B0x, B0y, A0x, A0y, A1x, A1y, true);
+    if (b.hl) test(B1x, B1y, A0x, A0y, A1x, A1y, true);
+    for (const f of found) this.add(a, b, f[0], f[1], f[2], f[3], f[4]);
+  }
+
+  step(h) {
+    const bs = this.bodies;
+    for (const b of bs) {
+      b.vy += G * h;
+      const lin = 1 / (1 + h * 0.15);
+      b.vx *= lin;
+      b.vy *= lin;
+      b.w /= 1 + h * (this.joint?.b === b ? 6 : 0.9);
+      b.px = b.py = b.pw = 0;
+    }
+    this.collide();
+    const held = { x: 0, y: 0 };
+    for (let it = 0; it < ITER; it++) {
+      if (this.joint) this.pull(this.joint, h, held);
+      for (const c of this.contacts) {
+        // friction, bounded by the normal impulse so far
+        const lim = FRICTION * c.jn;
+        const jt = Math.max(-lim, Math.min(lim, c.jt - c.mt * this.rel(c, REAL, true)));
+        this.apply(c, jt - c.jt, -c.ny, c.nx, REAL);
+        c.jt = jt;
+        // normal: push apart, never pull
+        const jn = Math.max(0, c.jn + c.mn * (c.bounce - this.rel(c, REAL)));
+        this.apply(c, jn - c.jn, c.nx, c.ny, REAL);
+        c.jn = jn;
+      }
+    }
+    // overlap is resolved with pseudo velocities that move bodies but add no energy
+    for (let it = 0; it < PITER; it++) {
+      for (const c of this.contacts) {
+        const target = (SPLIT * Math.max(0, c.depth - SLOP)) / h;
+        const jp = Math.max(0, c.jp + c.mn * (target - this.rel(c, PSEUDO)));
+        this.apply(c, jp - c.jp, c.nx, c.ny, PSEUDO);
+        c.jp = jp;
+      }
+    }
+    for (const b of bs) {
+      const sp = Math.hypot(b.vx, b.vy);
+      if (sp > MAX_V) {
+        b.vx *= MAX_V / sp;
+        b.vy *= MAX_V / sp;
+      }
+      b.w = Math.max(-40, Math.min(40, b.w));
+      b.x += (b.vx + b.px) * h;
+      b.y += (b.vy + b.py) * h;
+      b.a += (b.w + b.pw) * h;
+    }
+  }
+
+  /* Soft mouse joint (5 Hz, ζ 0.7): the grabbed tag hangs from the point you
+     took it by, lags a touch behind the pointer and swings. `acc` is the
+     impulse accumulated this step. */
+   pull(j, h, acc) {
+    const b = j.b;
+    const cos = Math.cos(b.a);
+    const sin = Math.sin(b.a);
+    const rx = cos * j.ax - sin * j.ay;
+    const ry = sin * j.ax + cos * j.ay;
+    const om = 2 * Math.PI * 5;
+    const k = b.m * om * om;
+    const d = 2 * b.m * 0.7 * om;
+    const g = 1 / (h * (d + h * k));
+    const beta = (h * k) / (d + h * k);
+    const k11 = b.im + b.ii * ry * ry + g;
+    const k12 = -b.ii * rx * ry;
+    const k22 = b.im + b.ii * rx * rx + g;
+    const det = k11 * k22 - k12 * k12;
+    const cx = b.vx - b.w * ry + ((b.x + rx - j.tx) * beta) / h + g * acc.x;
+    const cy = b.vy + b.w * rx + ((b.y + ry - j.ty) * beta) / h + g * acc.y;
+    const ox = acc.x;
+    const oy = acc.y;
+    acc.x -= (k22 * cx - k12 * cy) / det;
+    acc.y -= (k11 * cy - k12 * cx) / det;
+    const max = b.m * 9000 * h;
+    const len = Math.hypot(acc.x, acc.y);
+    if (len > max) {
+      acc.x *= max / len;
+      acc.y *= max / len;
+    }
+    const ix = acc.x - ox;
+    const iy = acc.y - oy;
+    b.vx += ix * b.im;
+    b.vy += iy * b.im;
+    b.w += (rx * iy - ry * ix) * b.ii;
+  }
+
+  tick() {
+    for (let i = 0; i < 3; i++) this.step(1 / HZ);
+  }
+
+  energy() {
+    let e = 0;
+    for (const b of this.bodies) e = Math.max(e, Math.hypot(b.vx, b.vy) + Math.abs(b.w) * (b.hl + b.r));
+    return e;
+  }
+
+  hit(p, pad = 6) {
+    for (let i = this.bodies.length - 1; i >= 0; i--) {
+      const b = this.bodies[i];
+      const c = Math.cos(b.a) * b.hl;
+      const s = Math.sin(b.a) * b.hl;
+      const q = closest(p.x, p.y, b.x - c, b.y - s, b.x + c, b.y + s);
+      if (Math.hypot(p.x - q.x, p.y - q.y) <= b.r + pad) return b;
+    }
+    return null;
+  }
+}
+
+function closest(px, py, ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const l = dx * dx + dy * dy;
+  const t = l ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l)) : 0;
+  return { x: ax + dx * t, y: ay + dy * t };
+}
+
+function seg(px, py, ax, ay, bx, by) {
+  const q = closest(px, py, ax, ay, bx, by);
+  return Math.hypot(px - q.x, py - q.y);
+}
+
+/* Where two segments cross, if they do. */
+function cross(a0x, a0y, a1x, a1y, b0x, b0y, b1x, b1y) {
+  const d1x = a1x - a0x, d1y = a1y - a0y;
+  const d2x = b1x - b0x, d2y = b1y - b0y;
+  const den = d1x * d2y - d1y * d2x;
+  if (Math.abs(den) < 1e-9) return null;
+  const rx = b0x - a0x, ry = b0y - a0y;
+  const s = (rx * d2y - ry * d2x) / den;
+  const t = (rx * d1y - ry * d1x) / den;
+  if (s <= 0 || s >= 1 || t <= 0 || t >= 1) return null;
+  return { x: a0x + d1x * s, y: a0y + d1y * s };
+}
+
+const FRONT = [
+  97.16, 310.13, 3.55, 0, 9.42, -1,
+  117.44, 308.01, -1.08, 0, 11.48, -1,
+  194.39, 309.27, -0.46, 0, 10.22, -1,
+  320.88, 309.14, -1.98, 0, 11.13, -1,
+  359.2, 309.58, -0.23, 0, 9.83, -1,
+  103.25, 291.19, -1.31, 0, 11.02, -1,
+  188.13, 290.14, -0.69, 32.06, 9, -1,
+  215.42, 308.28, 1.03, 0, 11.29, -1,
+  340.55, 309.91, -0.22, 0, 9.51, -1,
+  451.25, 308.12, -0.67, 0, 11.37, -1,
+  52.66, 310.41, 0, 26.08, 9, -1,
+  133.93, 294.61, 0.85, 0, 10.26, -1,
+  249.18, 299.29, 0.34, 33.06, 9, -1,
+  299.79, 308.79, -0.41, 0, 10.64, -1,
+  404.48, 310.44, 0, 26.95, 9, -1,
+  60.02, 290.27, 1.76, 0, 11.15, -1,
+  153.23, 296.05, -1.57, 0, 9.1, -1,
+  231.01, 273.83, 1.61, 0, 9.27, -1,
+  338.82, 290.18, 0.03, 33.11, 9, -1,
+  421.32, 290.44, -0.08, 31.81, 9, -1,
+  81.9, 290.95, 0.78, 0, 10.74, -1,
+  135.87, 275.85, 0.13, 35.76, 9, -1,
+  265.73, 276.85, 0.64, 27.94, 9, -1,
+  325.89, 272.33, 0.03, 35.82, 9, -1,
+  382.81, 262.89, 0.39, 28.76, 9, -1,
+  33.37, 291.05, -4.73, 0, 10.41, -1,
+  122.35, 255.96, 0.14, 28.47, 9, -1,
+  209.44, 252.12, -0.32, 35.2, 9, -1,
+  306.37, 254.02, 0.03, 30.15, 9, -1,
+  425.07, 259.86, 0.36, 29.86, 9, -1,
+];
+const MID = [
+  32.64, 299.7, -2.29, 0, 9.79, -1,
+  129.33, 301.35, -5.04, 0, 8.12, -1,
+  298.77, 301.24, 0, 28.58, 8.1, -1,
+  421.68, 301.32, 0, 29.99, 8.1, -1,
+  27.29, 281.36, 2.63, 0, 9.75, -1,
+  173, 300.94, -2.48, 0, 8.47, -1,
+  372.02, 300.38, 5.88, 0, 9.03, -1,
+  426.84, 283.3, -0.9, 0, 10.34, -1,
+  67.7, 293.83, 0.31, 24.4, 8.1, -1,
+  244.18, 299.45, 3.19, 0, 9.88, -1,
+  336.24, 286.16, 2.48, 0, 9.86, -1,
+  446.45, 283.93, 0.65, 0, 9.69, -1,
+  64.4, 275.83, 0.33, 30.06, 8.1, -1,
+  202.09, 293.34, -2.81, 24.7, 8.1, -1,
+  365.37, 283, 2.38, 25.82, 8.1, -1,
+  408.25, 273.3, -0.53, 28.67, 8.1, -1,
+  82.41, 264.88, 0.32, 24.14, 8.1, -1,
+  139.58, 286.18, 0.07, 23.56, 8.1, -1,
+];
+const FAR = [
+  124.08, 287.72, 2.37, 0, 7.7, -1,
+  230.2, 287.9, -1.37, 0, 7.51, -1,
+  418.16, 288.07, -0.17, 0, 7.35, -1,
+  213.94, 286.48, 12.2, 0, 8.56, -1,
+  303.38, 288.02, -0.01, 27.42, 7.2, -1,
+  400.05, 279.83, -0.39, 20.96, 7.2, -1,
+  102.07, 279.99, -0.33, 24.55, 7.2, -1,
+  258.21, 274.01, -0.01, 23.65, 7.2, -1,
+];
+
+// The front pile for a phone's stage: fewer tags, each 1.3x the size.
+const FRONT_BIG = [
+  31.84, 305.16, -1.48, 0, 14.28, -1,
+  188.4, 305.88, -2.3, 0, 13.98, -1,
+  441.72, 303.9, 1.58, 0, 15.5, -1,
+  68.37, 303.36, 2.35, 0, 15.78, -1,
+  235.5, 305.86, -1.72, 0, 13.59, -1,
+  347.24, 305.99, -7.47, 0, 13.6, -1,
+  97.37, 305.9, 2.17, 0, 13.56, -1,
+  208.04, 279.92, 0.01, 46.59, 12.6, -1,
+  286.3, 303.94, 3.66, 0, 15.49, -1,
+  128.1, 291.55, 0.43, 37.04, 12.6, -1,
+  168.01, 254.88, 0.01, 49.27, 12.6, -1,
+  411.38, 283.1, -0.55, 45.16, 12.6, -1,
+  78.4, 256.99, -0.72, 40.87, 12.6, -1,
+  261.14, 254.38, 0.58, 47.55, 12.6, -1,
+  363.32, 273.07, -0.34, 40.19, 12.6, -1,
+  63.2, 237.35, -0.72, 43.92, 12.6, -1,
+  285.54, 235.99, 0.5, 48.3, 12.6, -1,
+];
+
+function build(pile) {
+  const out = [];
+  for (let i = 0; i < pile.length; i += 6) {
+    const li = pile[i + 5];
+    out.push(makeBody(pile[i], pile[i + 1], pile[i + 2], pile[i + 3], pile[i + 4], li >= 0 ? LABELS[li] : ""));
+  }
+  return out;
+}
+
+/* Regenerates FRONT / MID / FAR / FRONT_BIG: run it once (bundled for node, or from the
+   dev server's console) and paste the result above. Never called at runtime. */
+function bake() {
+  const settle = (seed, floor, k, heaps, pills, discs, labels) => {
+    const rand = rng(seed);
+    // walls drawn in just a little: the original's pile lies across the whole floor
+    const world = new World(floor, 18);
+    // discs lean early, so they end up low and the tags rest across them
+    const kinds = [...Array(pills).fill("p"), ...Array(discs).fill("d")].sort(
+      (a, b) => (a === "d" ? 0.35 : 0.65) - (b === "d" ? 0.35 : 0.65) + (rand() - 0.5) * 0.9,
+    );
+    let li = 0;
+    kinds.forEach((kind, i) => {
+      const gauss = (rand() + rand() + rand() - 1.5) * 0.8;
+      const x = Math.max(30, Math.min(W - 30, heaps[i % heaps.length] + gauss * 36));
+      const y = floor - 24 - Math.floor(i / heaps.length) * 26 * Math.max(1, k);
+      if (kind === "p") {
+        const hl = (26 + rand() * 10) * k;
+        world.bodies.push(makeBody(x, y, (rand() - 0.5) * 2.4, hl, PILL_R * k, labels ? LABELS[li++ % LABELS.length] : ""));
+      } else {
+        world.bodies.push(makeBody(x, y, 0, 0, (9 + rand() * 2.5) * k));
+      }
+    });
+    for (let i = 0; i < 600; i++) world.tick();
+    const r = (v) => Math.round(v * 100) / 100;
+    return world.bodies.flatMap((b) => [r(b.x), r(b.y), r(b.a), r(b.hl), r(b.r), b.label ? LABELS.indexOf(b.label) : -1]);
+  };
+  return {
+    // enough to lie two or three deep, like the original's heap
+    FRONT: settle(41, FLOOR, 1, [60, 150, 240, 330, 420], 14, 16, false),
+    // further back sits a touch higher in the frame, as it would through a lens
+    MID: settle(23, FLOOR - 10, 0.9, [70, 200, 330, 430], 9, 9, false),
+    FAR: settle(7, FLOOR - 24, 0.8, [90, 250, 400], 4, 4, false),
+    // a phone's stage: fewer, bigger pills, so each is a thumb's width
+    FRONT_BIG: settle(41, FLOOR, 1.4, [80, 240, 400], 9, 8, false),
+  };
+}
+
+const demo = defineDemo({
+  width: W,
+  height: H,
+  background: "#d2d9d2",
+  css: css`
+    :scope {
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+    }
+    :scope canvas {
+      position: absolute;
+      inset: 0;
+      width: ${W}px;
+      height: ${H}px;
+    }
+    /* Out of focus, not out of shape: light enough to sit back, blurred
+       little enough that every tag still reads as a capsule. */
+    :scope .far {
+      filter: blur(6px);
+      opacity: 0.32;
+    }
+    :scope .mid {
+      filter: blur(3.6px);
+      opacity: 0.55;
+    }
+    /* The ground under the floor line, a shade darker. */
+    :scope::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: ${FLOOR + 2}px;
+      bottom: 0;
+      background: #bdc1bd;
+      opacity: 0.55;
+      pointer-events: none;
+    }
+    /* A thumb on empty sky scrolls the page; one on a piece takes it (the
+       touchstart below claims those). */
+    :scope .front {
+      touch-action: pan-y;
+      outline: none;
+      cursor: default;
+    }
+    :scope .front.is-over {
+      cursor: grab;
+    }
+    :scope .front.is-holding {
+      cursor: grabbing;
+    }
+    /* Full-bleed, so the ring sits just inside the edge instead of outside.
+       The site's blue a step darker: on this grey-green it's 3.9:1. */
+    :scope .front:focus-visible {
+      outline: 2px solid oklch(0.54 0.19 255);
+      outline-offset: -4px;
+      border-radius: 14px;
+    }
+  `,
+  setup({ root, signal, wait, reduced, local, frame, live }) {
+    const far = h("canvas", { class: "far", "aria-hidden": "true" });
+    const mid = h("canvas", { class: "mid", "aria-hidden": "true" });
+    const front = h("canvas", {
+      class: "front",
+      tabindex: live ? "0" : "-1",
+      role: "img",
+      "aria-label": "一堆胶囊和小球：拖住任意一个甩出去；按空格随机抛起一个，← → 推动整堆",
+    });
+    root.append(far, mid, front);
+
+    const farPile = build(FAR);
+    /* The middle pile is live too - pieces leave it now and then, out of
+       focus - in its own world: depth layers never touch each other. */
+    const freshMid = () => {
+      const w = new World(FLOOR - 10);
+      w.bodies = build(MID);
+      return w;
+    };
+    let midWorld = freshMid();
+    /* A phone's stage shows the artboard at about 0.75x, where a tag is
+       ~20px tall under a thumb. Live on a stage that narrow, the front pile
+       is the big one: fewer tags, each 1.3x. */
+    const box = root.parentElement?.clientWidth ?? 0;
+    const big = live && box > 0 && box < 480;
+    const fresh = () => {
+      const w = new World(FLOOR);
+      w.bodies = build(big ? FRONT_BIG : FRONT);
+      return w;
+    };
+    let world = fresh();
+
+    /* Backing store follows the on-screen size: crisp at 1.7x on stage,
+       no wasted pixels when shrunk into a card. */
+    let res = 0;
+    const sizeCanvas = (cv, r) => {
+      cv.width = Math.round(W * r);
+      cv.height = Math.round(H * r);
+    };
+    const drawPill = (g, b, x, y, a) => {
+      g.save();
+      g.translate(x, y);
+      g.rotate(a);
+      g.beginPath();
+      if (b.hl) g.roundRect(-b.hl - b.r, -b.r, 2 * (b.hl + b.r), 2 * b.r, b.r);
+      else g.arc(0, 0, b.r, 0, Math.PI * 2);
+      g.fill();
+      g.restore();
+    };
+    const drawStatic = (cv, bodies) => {
+      const g = cv.getContext("2d");
+      g.setTransform(cv.width / W, 0, 0, cv.height / H, 0, 0);
+      g.clearRect(0, 0, W, H);
+      g.fillStyle = INK;
+      for (const b of bodies) drawPill(g, b, b.x, b.y, b.a);
+    };
+
+    const fg = front.getContext("2d");
+    let held = null;
+    let over = null;
+
+    const draw = () => {
+      // The blur is the canvas's own CSS filter: one smooth pass, whatever moves.
+      drawStatic(mid, midWorld.bodies);
+      fg.setTransform(res, 0, 0, res, 0, 0);
+      fg.clearRect(0, 0, W, H);
+      fg.fillStyle = "rgb(60 62 60 / 0.75)";
+      fg.fillRect(18, FLOOR, W - 36, 0.6);
+      for (const b of world.bodies) {
+        const dx = b.x - b.lx;
+        const dy = b.y - b.ly;
+        const da = b.a - b.la;
+        const travel = Math.hypot(dx, dy) + Math.abs(da) * (b.hl + b.r);
+        /* Motion blur: smear the body across this frame's travel. Each sample
+           is faint, the overlap adds back up to solid; a sample every px or
+           so, so the smear reads as a blur rather than a row of copies. */
+        const n = reduced ? 1 : Math.min(32, Math.max(1, Math.ceil(travel / 1.2)));
+        const alpha = n === 1 ? 1 : 1 - Math.pow(0.04, 1 / n);
+        if (b === held) {
+          fg.shadowColor = "rgb(20 22 24 / 0.28)";
+          fg.shadowBlur = 18 * res;
+          fg.shadowOffsetY = 10 * res;
+        }
+        fg.fillStyle = b === over && !held ? "#454845" : INK;
+        for (let i = 0; i < n; i++) {
+          const t = n === 1 ? 1 : i / (n - 1);
+          fg.globalAlpha = alpha;
+          drawPill(fg, b, b.lx + dx * t, b.ly + dy * t, b.la + da * t);
+        }
+        fg.globalAlpha = 1;
+        fg.shadowColor = "transparent";
+        if (b.label) {
+          const speed = travel * 60;
+          fg.globalAlpha = Math.max(0, Math.min(1, 1.3 - speed / 900));
+          if (fg.globalAlpha > 0.02) {
+            fg.save();
+            fg.translate(b.x, b.y);
+            // a tag lying the other way round still reads left to right
+            const up = Math.atan2(Math.sin(b.a), Math.cos(b.a));
+            fg.rotate(Math.abs(up) > Math.PI / 2 ? up + Math.PI : up);
+            fg.fillStyle = "#eceee9";
+            // the type grows with the tag (r is 14 on a baked one)
+            fg.font = `600 ${b.r}px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif`;
+            fg.textAlign = "center";
+            fg.textBaseline = "middle";
+            fg.fillText(b.label, 0, 0.5);
+            fg.restore();
+          }
+          fg.globalAlpha = 1;
+        }
+        b.lx = b.x;
+        b.ly = b.y;
+        b.la = b.a;
+      }
+    };
+
+    const resize = () => {
+      const r = root.getBoundingClientRect();
+      const scale = r.width / W || 1;
+      const next = Math.min(4, Math.max(1, Math.ceil(scale * devicePixelRatio * 4) / 4));
+      if (next === res) return;
+      res = next;
+      sizeCanvas(front, res);
+      sizeCanvas(mid, Math.min(2, res));
+      sizeCanvas(far, Math.min(1.5, res));
+      drawStatic(far, farPile);
+      draw();
+    };
+    const ro = new ResizeObserver(resize);
+    if (root.parentElement) ro.observe(root.parentElement);
+    signal.addEventListener("abort", () => ro.disconnect());
+    resize();
+
+    /* Global sleep: once everything has been still for ~¾ s the loop stops
+       stepping and drawing; any touch wakes it. */
+    let calm = 0;
+    let asleep = true;
+    const wake = () => {
+      asleep = false;
+      calm = 0;
+    };
+    frame((dt) => {
+      if (asleep) return;
+      // ~180 Hz substeps whatever the display rate
+      const sec = Math.min(dt, 34) / 1000;
+      // A zero-length frame (a fling the instant the script starts) would
+      // divide by zero in the solver.
+      if (!sec) return;
+      const n = Math.max(1, Math.round(sec * HZ));
+      for (let i = 0; i < n; i++) {
+        world.step(sec / n);
+        midWorld.step(sec / n);
+      }
+      draw();
+      if (!world.joint && Math.max(world.energy(), midWorld.energy()) < 9) {
+        if (++calm > 45) {
+          for (const b of [...world.bodies, ...midWorld.bodies]) b.vx = b.vy = b.w = 0;
+          draw();
+          asleep = true;
+        }
+      } else calm = 0;
+    });
+
+    /* ---- grabbing, shared by the pointer and the script ---- */
+    const trail = [];
+    const now = () => performance.now();
+    const grab = (b, p) => {
+      const c = Math.cos(b.a);
+      const s = Math.sin(b.a);
+      const dx = p.x - b.x;
+      const dy = p.y - b.y;
+      world.joint = { b, ax: c * dx + s * dy, ay: -s * dx + c * dy, tx: p.x, ty: p.y };
+      // the held tag draws on top of the pile
+      world.bodies.splice(world.bodies.indexOf(b), 1);
+      world.bodies.push(b);
+      held = b;
+      trail.length = 0;
+      trail.push({ ...p, t: now() });
+      front.classList.add("is-holding");
+      wake();
+    };
+    const drag = (p) => {
+      if (!world.joint) return;
+      world.joint.tx = p.x;
+      world.joint.ty = p.y;
+      trail.push({ ...p, t: now() });
+      while (trail.length > 2 && now() - trail[0].t > 90) trail.shift();
+      wake();
+    };
+    /* Let go with the hand's own speed: the joint lags a little, so blend in
+       the pointer's last 90 ms to make a flick read as a throw. */
+    const drop = () => {
+      const j = world.joint;
+      if (!j) return;
+      const b = j.b;
+      const first = trail[0];
+      const last = trail[trail.length - 1];
+      const span = (last.t - first.t) / 1000;
+      if (span > 0.012) {
+        const vx = (last.x - first.x) / span;
+        const vy = (last.y - first.y) / span;
+        b.vx = b.vx * 0.4 + vx * 0.6;
+        b.vy = b.vy * 0.4 + vy * 0.6;
+        b.w += Math.max(-14, Math.min(14, (vx * 0.004 * (j.ay >= 0 ? 1 : -1)) || 0));
+      }
+      world.joint = null;
+      held = null;
+      front.classList.remove("is-holding");
+      wake();
+    };
+    /* Tapping empty space nudges whatever is near, so a near-miss still does something. */
+    const poke = (p) => {
+      for (const b of world.bodies) {
+        const dx = b.x - p.x;
+        const dy = b.y - p.y;
+        const d = Math.hypot(dx, dy);
+        if (d > 90) continue;
+        const f = (1 - d / 90) * 520;
+        b.vx += (dx / (d || 1)) * f;
+        b.vy += (dy / (d || 1)) * f - f * 0.6;
+        b.w += (Math.random() - 0.5) * 8;
+      }
+      wake();
+    };
+
+    front.addEventListener(
+      "touchstart",
+      (e) => {
+        const t = e.touches[0];
+        if (e.touches.length === 1 && t && world.hit(local(t), 10)) e.preventDefault();
+      },
+      { signal, passive: false },
+    );
+    front.addEventListener(
+      "pointerdown",
+      (e) => {
+        if (e.button !== 0) return;
+        const p = local(e);
+        const b = world.hit(p, e.pointerType === "mouse" ? 2 : 10);
+        front.setPointerCapture(e.pointerId);
+        if (b) grab(b, p);
+        else poke(p);
+      },
+      { signal },
+    );
+    front.addEventListener(
+      "pointermove",
+      (e) => {
+        const p = local(e);
+        if (world.joint) return drag(p);
+        if (e.pointerType !== "mouse") return;
+        const b = world.hit(p, 2);
+        if (b !== over) {
+          over = b;
+          front.classList.toggle("is-over", !!b);
+          if (asleep) draw();
+        }
+      },
+      { signal },
+    );
+    for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+      front.addEventListener(type, drop, { signal });
+    }
+    front.addEventListener(
+      "pointerleave",
+      () => {
+        over = null;
+        front.classList.remove("is-over");
+        if (asleep) draw();
+      },
+      { signal },
+    );
+
+    const toss = () => {
+      const bs = world.bodies;
+      const b = bs[Math.floor(Math.random() * bs.length)];
+      b.vx = (W / 2 - b.x) * 1.2 + (Math.random() - 0.5) * 300;
+      b.vy = -900 - Math.random() * 300;
+      b.w = (Math.random() - 0.5) * 18;
+      wake();
+    };
+    front.addEventListener(
+      "keydown",
+      (e) => {
+        if (e.key === " " || e.key === "Enter") toss();
+        else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+          const dir = e.key === "ArrowLeft" ? -1 : 1;
+          for (const b of world.bodies) {
+            b.vx += dir * (260 + Math.random() * 120);
+            b.vy -= 160 + Math.random() * 160;
+          }
+          wake();
+        } else return;
+        e.preventDefault();
+        e.stopPropagation();
+      },
+      { signal },
+    );
+
+    /* ---- the walkthrough ---- */
+    /* The original take has no pointer in it: pieces just keep leaving the
+       pile - a pill or a disc goes up every half second or so, some high
+       enough to clip the top edge and fall back - so something is always in
+       the air. Each fling picks something lying still, away from the walls. */
+    const fling = (w = world) => {
+      const pool = w.bodies.filter((b) => b.x > 40 && b.x < W - 40 && Math.hypot(b.vx, b.vy) < 40);
+      if (!pool.length) return;
+      const b = pool[Math.floor(Math.random() * pool.length)];
+      const toward = (W / 2 - b.x) / (W / 2);
+      b.vx = toward * 260 + (Math.random() - 0.5) * 520;
+      b.vy = -(760 + Math.random() * 560);
+      b.w = (Math.random() - 0.5) * 16;
+      wake();
+    };
+
+    return {
+      async script() {
+        await wait(250);
+        for (let i = 0; i < 14; i++) {
+          fling();
+          // now and then one goes up from the pile behind, out of focus
+          if (i % 3 === 1) fling(midWorld);
+          if (Math.random() < 0.3) {
+            await wait(140);
+            fling();
+          }
+          await wait(420 + Math.random() * 380);
+        }
+      },
+      reset() {
+        drop();
+        over = null;
+        front.classList.remove("is-over");
+        // a pile that wandered off the floor (or out of reach) starts over
+        if (world.bodies.some((b) => b.y > FLOOR + 4 || b.x < 0 || b.x > W)) {
+          world = fresh();
+          draw();
+        }
+        if (midWorld.bodies.some((b) => b.y > FLOOR - 6 || b.x < 0 || b.x > W)) {
+          midWorld = freshMid();
+          draw();
+        }
+      },
+    };
+  },
+});
+
+/* ==================================================================
+   挂载：画板按原尺寸放进 #demo，直接交给你操作，不跑演示脚本。
+   ================================================================== */
+
+{
+  const host = document.getElementById("demo");
+  // 底边裁在内容中间的 Demo（bleed）占满整个窗口：画板贴顶、向下长到窗口底边，和站点全屏试玩一样放大到 1.5 倍。
+  const bleed = demo.bleed === "bottom";
+  if (bleed) document.body.classList.add("bleed");
+  else {
+    host.style.aspectRatio = `${demo.width} / ${demo.height}`;
+    // 也按窗口高度收窄：矮窗口里整个画板缩小放下，而不是顶部被裁出窗口外。
+    host.style.maxWidth = `min(${demo.width}px, calc((100dvh - 32px) * ${demo.width} / ${demo.height}))`;
+  }
+  const background = demo.background ?? (demo.theme === "dark" ? "#111" : "#fff");
+  const controller = mountDemo(host, "physics-pills", demo, { live: true, autoplay: false, maxScale: bleed ? 1.5 : 1, focus: true });
+  // 渐变底色已经铺满整页；画板里再画一遍会在画板边缘留下一道硬边。
+  const artboard = host.querySelector(".demo-artboard");
+  if (artboard && background.includes("gradient(")) artboard.style.background = "none";
+  // 有的 Demo 会改自己的底色（比如切到暗色），页面跟着变。
+  controller.onSurface((surface) => (document.body.style.background = surface?.color ?? background));
+}
+</script>
+</body>
+</html>

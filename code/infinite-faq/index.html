@@ -1,0 +1,1511 @@
+<!doctype html>
+<!--
+  问不完的常见问题 · Open-Ended FAQ
+  Cantrip 的一条交互实现：https://cantrip.cn/i/infinite-faq
+  原作：Gustavo（@heyimgustavo）  https://x.com/heyimgustavo/status/2100728786694136224
+  这是 Cantrip 照着原作重写的实现，不是原作者的源码。
+
+  怎么用
+    · 用浏览器直接打开这个文件就能玩，不用构建。
+    · <script type="module"> 里依次是：Cantrip 的 Demo 运行时（mountDemo 等，
+      负责缩放画板、注入样式、管理事件），然后是这个 Demo 本身
+      （defineDemo({ width, height, css, setup })），最后一行把它挂到 #demo 上。
+    · 搬进自己的项目：交互都在 setup() 里，ctx.root 是画板元素；css 里的
+      :scope 会被替换成 .d-infinite-faq。不需要演示脚本的话，script/reset 可以删掉。
+
+  依赖
+    · Motion 12.43.0（https://motion.dev），由下面的 import map 从 esm.sh 加载，需要联网。
+      也可以 npm i motion 后删掉 import map，改成本地导入：import { animate } from "motion"。
+
+  源文件：src/demos/infinite-faq.ts 与 src/demos/_kit.ts（构建时生成）。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>问不完的常见问题 · Cantrip</title>
+<!-- 也可以 npm i motion 后删掉这段 import map，改成本地导入。 -->
+<script type="importmap">
+{ "imports": { "motion": "https://esm.sh/motion@12.43.0" } }
+</script>
+<style>
+/* 页面：画板居中，四周留白。 */
+html, body { height: 100%; }
+body {
+  margin: 0;
+  display: grid;
+  place-items: safe center;
+  padding: 16px;
+  box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+/* 画板的底边本来就裁在内容中间的 Demo（bleed）：#demo 铺满窗口，裁口落在窗口底边。 */
+body.bleed { display: block; padding: 0; }
+body.bleed #demo { height: 100vh; height: 100dvh; }
+#demo { position: relative; width: 100%; overflow: hidden; }
+
+/* 基础重置（节选自 Tailwind preflight，站点上 Demo 就是在它之上画的）。 */
+@layer reset {
+  *, ::before, ::after { box-sizing: border-box; margin: 0; padding: 0; border: 0 solid; }
+  h1, h2, h3, h4, h5, h6 { font-size: inherit; font-weight: inherit; }
+  a { color: inherit; text-decoration: inherit; }
+  ol, ul, menu { list-style: none; }
+  img, svg, video, canvas { display: block; vertical-align: middle; }
+  img, video { max-width: 100%; height: auto; }
+  button, input, select, textarea {
+    font: inherit; letter-spacing: inherit; color: inherit;
+    border-radius: 0; background-color: transparent; opacity: 1;
+  }
+  button { cursor: pointer; }
+  ::placeholder { opacity: 1; color: color-mix(in oklab, currentcolor 50%, transparent); }
+  [hidden]:where(:not([hidden="until-found"])) { display: none !important; }
+}
+
+/* 画板：固定尺寸，由运行时按容器等比缩放。 */
+.demo-artboard {
+  position: absolute;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #111;
+  text-align: left;
+  -webkit-font-smoothing: antialiased;
+}
+.demo-artboard[data-theme="dark"] { color: #f5f5f5; }
+.demo-artboard :where(button, input) { font: inherit; color: inherit; }
+.demo-artboard:not([inert]) { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.demo-artboard :where(input, textarea, [contenteditable]) { -webkit-user-select: text; user-select: text; }
+.demo-artboard[tabindex="-1"]:focus { outline: none; }
+</style>
+<script>
+(() => {
+  const base = '/cantrip-cn-study';
+  const withBase = value => {
+    if (value instanceof URL) value = value.pathname + value.search + value.hash;
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return value;
+    if (value === base || value.startsWith(base + "/")) return value;
+    return base + (value === "/" ? "/" : value);
+  };
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    if (typeof input === "string" || input instanceof URL) {
+      const url = withBase(input);
+      const method = init?.method ?? "GET";
+      if (method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(url, init);
+    }
+    if (input instanceof Request && new URL(input.url).origin === location.origin) {
+      const url = withBase(new URL(input.url).pathname + new URL(input.url).search + new URL(input.url).hash);
+      if (input.method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(new Request(url, input), init);
+    }
+    return nativeFetch(input, init);
+  };
+  for (const method of ["pushState", "replaceState"]) {
+    const original = history[method].bind(history);
+    history[method] = (state, title, url) => original(state, title, withBase(url));
+  }
+})();
+</script></head>
+<body>
+<div id="demo"></div>
+<script type="module">
+import { animate } from "motion";
+
+/* ==================================================================
+   Cantrip 的 Demo 运行时（src/demos/_kit.ts）
+   ================================================================== */
+
+/* The runtime every live demo shares.
+
+   A demo is authored once, at a fixed artboard size, and shown in two places:
+   shrunk into a feed card, where it plays a scripted walkthrough on a loop
+   with a fake cursor (the way a screen recording would), and blown up on the
+   detail stage, where the same walkthrough runs until the visitor reaches in
+   and takes over. The artboard is scaled with a transform rather than being
+   re-laid out, so a demo looks identical at 260px and at 700px. */
+
+const defineDemo = (demo) => demo;
+
+/** Tag for the `css` field - identity, it just marks the string for editors. */
+const css = String.raw;
+
+const springs = {
+  snappy: { type: "spring", duration: 0.3, bounce: 0.15 },
+  smooth: { type: "spring", duration: 0.5, bounce: 0.1 },
+  bouncy: { type: "spring", duration: 0.55, bounce: 0.35 },
+};
+
+const ease = {
+  out: [0.23, 1, 0.32, 1],
+  inOut: [0.77, 0, 0.175, 1],
+  drawer: [0.32, 0.72, 0, 1],
+};
+
+function h(
+  tag,
+  props = {},
+  ...children
+) {
+  const el = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (key === "class") el.className = value;
+    else el.setAttribute(key, value);
+  }
+  el.append(...children);
+  return el;
+}
+
+/* ------------------------------------------------------------------ */
+/* Mounting                                                            */
+/* ------------------------------------------------------------------ */
+
+const CANCELLED = Symbol("cancelled");
+const injected = new Set();
+
+function inject(id, source) {
+  if (!source || injected.has(id)) return;
+  injected.add(id);
+  const style = document.createElement("style");
+  style.dataset.demo = id;
+  style.textContent = source.replaceAll(":scope", `.d-${id}`);
+  document.head.append(style);
+}
+
+const CURSOR_SVG = `<svg viewBox="0 0 20 24" width="20" height="24" aria-hidden="true"><path d="M2.2 1.6v17.6l4.5-4.2 3 6.6 3.1-1.4-3-6.4h6.3z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+
+function mountDemo(
+  frame,
+  id,
+  demo,
+  { live = false, maxScale = Infinity, focus = false, autoplay = true } = {},
+) {
+  inject(id, demo.css);
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // A phone has no arrow: there the walkthrough is drawn as a fingertip.
+  const touch = matchMedia("(hover: none) and (pointer: coarse)").matches;
+  const mount = new AbortController();
+  const listeners = new Set();
+
+  const root = document.createElement("div");
+  root.className = `demo-artboard d-${id}`;
+  root.dataset.theme = demo.theme ?? "light";
+  root.style.width = `${demo.width}px`;
+  root.style.height = `${demo.height}px`;
+  if (demo.background) root.style.background = demo.background;
+  if (!live) root.inert = true;
+  frame.append(root);
+
+  /* A walkthrough presses its buttons with .click(): those clicks are the
+     demo's business only. Bubbling on, one reached the feed card around a
+     demo and opened its detail by itself. The demo's own listeners - on the
+     artboard or anything inside it - have all run by the time this does. */
+  for (const type of ["click", "dblclick", "pointerdown", "pointerup", "mousedown", "mouseup", "keydown", "keyup", "input", "change"]) {
+    root.addEventListener(type, (e) => e.isTrusted || e.stopPropagation(), { signal: mount.signal });
+  }
+
+  let scale = 1;
+
+  /* ---- pause plumbing: timers and animations all hang off this ---- */
+  let paused = false;
+  let frozen = [];
+  const onPause = new Set();
+  const onResume = new Set();
+
+  let script = new AbortController();
+
+  const cancelled = () => Object.assign(new Error("cancelled"), { [CANCELLED]: true });
+
+  /* A timeout whose countdown stops while the demo is paused. It belongs to
+     the mount, not to a script run - only unmount or `cancel` clears it. */
+  const later = (fn, ms) => {
+    if (mount.signal.aborted) return () => {};
+    let remaining = ms;
+    let started = 0;
+    let timer = 0;
+    const run = () => {
+      started = performance.now();
+      timer = window.setTimeout(fire, remaining);
+    };
+    const halt = () => {
+      clearTimeout(timer);
+      remaining -= performance.now() - started;
+    };
+    const cancel = () => {
+      clearTimeout(timer);
+      onPause.delete(halt);
+      onResume.delete(run);
+      mount.signal.removeEventListener("abort", cancel);
+    };
+    const fire = () => {
+      cancel();
+      fn();
+    };
+    onPause.add(halt);
+    onResume.add(run);
+    mount.signal.addEventListener("abort", cancel);
+    if (!paused) run();
+    return cancel;
+  };
+
+  const wait = (ms) =>
+    new Promise((resolve, reject) => {
+      const signal = script.signal;
+      if (signal.aborted) return reject(cancelled());
+      const abort = () => {
+        cancel();
+        reject(cancelled());
+      };
+      const cancel = later(() => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      }, ms);
+      signal.addEventListener("abort", abort);
+    });
+
+  /** Runs a numeric tween that honours pause and script cancellation. */
+  const tween = (duration, ease, onUpdate) =>
+    new Promise((resolve, reject) => {
+      const signal = script.signal;
+      if (signal.aborted) return reject(cancelled());
+      /* Reduced motion jumps straight to the end. Motion would defer even a
+         zero-length tween's one update to the next frame, after `finished`
+         has settled - so land it here, or a move resolves short of its
+         target and its onMove listeners never hear where it ended. */
+      if (reduced) {
+        onUpdate(1);
+        return resolve();
+      }
+      const controls = animate(0, 1, {
+        duration,
+        ease: ease,
+        onUpdate,
+      });
+      const halt = () => controls.pause();
+      const run = () => controls.play();
+      const abort = () => {
+        controls.stop();
+        cleanup();
+        reject(cancelled());
+      };
+      const cleanup = () => {
+        onPause.delete(halt);
+        onResume.delete(run);
+        signal.removeEventListener("abort", abort);
+      };
+      onPause.add(halt);
+      onResume.add(run);
+      signal.addEventListener("abort", abort);
+      if (paused) controls.pause();
+      controls.finished.then(() => {
+        cleanup();
+        resolve();
+      });
+    });
+
+  const local = (e) => {
+    const r = root.getBoundingClientRect();
+    return {
+      // Layout size, not demo.width/height: a bleed artboard grows taller.
+      x: (e.clientX - r.left) / (r.width / root.offsetWidth || 1),
+      y: (e.clientY - r.top) / (r.height / root.offsetHeight || 1),
+    };
+  };
+
+  const center = (el) => {
+    const r = el.getBoundingClientRect();
+    return local({ clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 });
+  };
+
+  /* ---- the fake cursor ---- */
+  const pointer = document.createElement("div");
+  pointer.className = touch ? "demo-cursor is-touch" : "demo-cursor";
+  if (!touch) pointer.innerHTML = CURSOR_SVG;
+  if (autoplay) root.append(pointer);
+
+  const pos = { x: demo.width * 0.72, y: demo.height * 0.82 };
+  let pressed = false;
+  const moveListeners = new Set();
+  // Where the hotspot sits inside the drawing: the arrow's tip, the dot's centre.
+  const tip = touch ? { x: 11, y: 11 } : { x: 2, y: 1.5 };
+  const place = () => {
+    /* In a card the cursor scales with the picture, like a screen recording
+       (and so does the poster still, shot at 2× a card). Blown up on a
+       stage it stays the size of a real one. */
+    const k = (pressed ? (touch ? 0.8 : 0.86) : 1) / (live ? Math.max(1, scale) : 1);
+    pointer.style.transform = `translate(${pos.x - tip.x}px, ${pos.y - tip.y}px) scale(${k})`;
+    pointer.classList.toggle("is-pressed", pressed);
+  };
+  const paint = () => {
+    place();
+    moveListeners.forEach((fn) => fn({ x: pos.x, y: pos.y }));
+  };
+
+  /* Contain-fit the artboard into whatever box it was given, up to
+     `maxScale`: centred, or for a `bleed` demo pinned to the top and grown
+     down to the box's floor (see `Demo.bleed`).
+     Layout size is what the observer sees, so a FLIP transform on an
+     ancestor doesn't make the demo re-scale mid-flight.
+     Its edges land on whole device pixels. Between two, the artboard's own
+     background and a layer drawn over it are each smoothed on their own,
+     and the first showed through as a hairline - a light line along a dark
+     window. So the box is snapped: its size by a hair of non-uniform
+     scale, its corner by a sub-pixel nudge measured against the frame. */
+  const hang = demo.bleed === "bottom";
+  root.style.left = root.style.top = "0";
+  root.style.transformOrigin = "0 0";
+  const fit = () => {
+    const w = frame.clientWidth;
+    const hgt = frame.clientHeight;
+    if (!w || !hgt) return;
+    scale = Math.min(w / demo.width, hgt / demo.height, maxScale * (demo.stretch ?? 1));
+    const dpr = devicePixelRatio || 1;
+    const snap = (v) => Math.round(v * dpr) / dpr;
+    const bw = snap(demo.width * scale);
+    const bh = snap(demo.height * scale);
+    // Where the frame's padding box starts on screen, so the nudge lands the corner on the grid.
+    const r = frame.getBoundingClientRect();
+    const ox = r.left + frame.clientLeft;
+    const oy = r.top + frame.clientTop;
+    const x = snap(ox + (w - bw) / 2) - ox;
+    const sy = bh / demo.height;
+    const rest = hgt - (demo.reach ?? Infinity) * sy;
+    const y = hang ? (rest > 0 ? snap(oy + rest / 2) - oy : 0) : snap(oy + (hgt - bh) / 2) - oy;
+    // Grown in whole artboard px past the box's floor; the frame clips the rest.
+    if (hang) root.style.height = `${Math.max(demo.height, Math.ceil((hgt - y) / sy))}px`;
+    root.style.transform = `translate(${x}px, ${y}px) scale(${bw / demo.width}, ${sy})`;
+    place();
+  };
+  const ro = new ResizeObserver(fit);
+  ro.observe(frame);
+  fit();
+
+  /* ---- surface: the colour the page around the artboard should be ---- */
+  let surface = null;
+  const surfaceListeners = new Set();
+  const frameBg = frame.style.backgroundColor;
+  const setSurface = (color, tone) => {
+    const next = color ? { color, tone: tone ?? demo.theme ?? "light" } : null;
+    if (next?.color === surface?.color && next?.tone === surface?.tone) return;
+    surface = next;
+    // The frame's own letterbox follows too, wherever it's mounted.
+    frame.style.backgroundColor = next ? next.color : frameBg;
+    surfaceListeners.forEach((fn) => fn(next));
+  };
+  const resolve = (t) => ("x" in t ? t : center(t));
+
+  const cursor = {
+    get x() {
+      return pos.x;
+    },
+    get y() {
+      return pos.y;
+    },
+    show(at) {
+      if (at) Object.assign(pos, resolve(at));
+      paint();
+      pointer.classList.add("is-visible");
+    },
+    hide() {
+      pointer.classList.remove("is-visible");
+    },
+    async move(to, opts = {}) {
+      const target = resolve(to);
+      const end = { x: target.x + (opts.offset?.x ?? 0), y: target.y + (opts.offset?.y ?? 0) };
+      const start = { ...pos };
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 0.5) return;
+      /* A hand doesn't travel in a ruler-straight line - bow the path a
+         little to one side, proportional to the distance covered. */
+      const bow = dist * 0.12;
+      const ctrl = {
+        x: start.x + dx / 2 - (dy / dist) * bow,
+        y: start.y + dy / 2 + (dx / dist) * bow,
+      };
+      const duration = opts.duration ?? Math.min(0.95, Math.max(0.38, dist / 700));
+      pointer.classList.add("is-visible");
+      await tween(duration, [0.45, 0, 0.2, 1], (t) => {
+        const u = 1 - t;
+        pos.x = u * u * start.x + 2 * u * t * ctrl.x + t * t * end.x;
+        pos.y = u * u * start.y + 2 * u * t * ctrl.y + t * t * end.y;
+        paint();
+      });
+    },
+    async press() {
+      pressed = true;
+      paint();
+      await wait(90);
+    },
+    async release() {
+      pressed = false;
+      paint();
+      await wait(60);
+    },
+    async click(fn) {
+      await cursor.press();
+      fn?.();
+      await cursor.release();
+    },
+    onMove(fn) {
+      moveListeners.add(fn);
+      return () => moveListeners.delete(fn);
+    },
+  };
+
+  const frameLoops = new Set();
+  let rafId = 0;
+  let last = 0;
+  const tick = (t) => {
+    const dt = Math.min(64, t - (last || t));
+    last = t;
+    frameLoops.forEach((fn) => fn(dt, t));
+    rafId = requestAnimationFrame(tick);
+  };
+  const startFrames = () => {
+    if (!rafId && frameLoops.size && !paused) {
+      last = 0;
+      rafId = requestAnimationFrame(tick);
+    }
+  };
+  const stopFrames = () => {
+    cancelAnimationFrame(rafId);
+    rafId = 0;
+  };
+  onPause.add(stopFrames);
+  onResume.add(startFrames);
+
+  const ctx = {
+    root,
+    live,
+    reduced,
+    signal: mount.signal,
+    wait,
+    later,
+    cursor,
+    local,
+    center,
+    frame(fn) {
+      frameLoops.add(fn);
+      startFrames();
+    },
+    setSurface,
+  };
+
+  const instance = demo.setup(ctx) ?? {};
+  if (autoplay) root.append(pointer); // keep the cursor above whatever setup built
+
+  /* Focusable by script and by a click on its bare surface, but no extra
+     tab stop - unless the demo made it one itself. */
+  if (live && focus) {
+    if (!root.hasAttribute("tabindex")) root.tabIndex = -1;
+    root.focus({ preventScroll: true, focusVisible: false });
+  }
+
+  /* While the walkthrough plays, the demo's live regions - a transcript, a
+     message's status, a reader's caption - would read the fake visitor's
+     every step aloud. They're silenced for the script and given back the
+     moment the demo is the visitor's. */
+  const hushed = new Map();
+  const hush = (on) => {
+    if (on) {
+      root.querySelectorAll("[aria-live], [role=status], [role=log], [role=alert], [role=timer], [role=marquee]").forEach((el) => {
+        if (hushed.has(el)) return;
+        hushed.set(el, el.getAttribute("aria-live"));
+        el.setAttribute("aria-live", "off");
+      });
+    } else {
+      hushed.forEach((was, el) => (was === null ? el.removeAttribute("aria-live") : el.setAttribute("aria-live", was)));
+      hushed.clear();
+    }
+  };
+
+  /* ---- script loop ---- */
+  let state = "idle";
+  const setState = (next) => {
+    state = next;
+    frame.dataset.demoState = next;
+    if (live) hush(next === "script");
+    listeners.forEach((fn) => fn(next));
+  };
+
+  /* wait()/tween() read the *current* controller when called, so a new run
+     must not start until the old one has actually left its script - or a
+     pass still awaiting something outside the kit would pick up the new
+     signal and keep running alongside it. */
+  let running = Promise.resolve();
+  let pendingReplay = null;
+  let destroyed = false;
+
+  /* How far a real mouse has hovered since this run started - see the
+     takeover below. */
+  let travelled = 0;
+  let prev = null;
+  /* Whether hovering may take over at all. A replay is asked for with the
+     mouse, which then moves off the button it pressed: that isn't reaching
+     in. Hover waits until the mouse has rested a second, or has left the
+     stage and come back. */
+  let armed = true;
+  let disarm = () => {};
+
+  const loop = () => (running = run());
+
+  const run = async () => {
+    if (!instance.script) return;
+    script = new AbortController();
+    const signal = script.signal;
+    /* Every run, a replay included, gets the full hover grace again. Left
+       over, the travel that took the last one over would end this one on
+       the first nudge, and a stale `prev` would add one big jump. */
+    travelled = 0;
+    prev = null;
+    setState("script");
+    cursor.show();
+    while (!signal.aborted) {
+      try {
+        await instance.script(ctx);
+        await wait(200);
+      } catch (error) {
+        if ((error)?.[CANCELLED] || signal.aborted) break;
+        console.error(`[demo:${id}]`, error);
+        break;
+      }
+      if (!signal.aborted) instance.reset?.();
+    }
+  };
+
+  const stopScript = () => {
+    script.abort();
+    pressed = false;
+    cursor.hide();
+  };
+
+  const replay = () => {
+    stopScript();
+    instance.reset?.();
+    disarm();
+    // Wait for the cancelled pass to unwind (bounded, in case it's stuck).
+    // Only the latest request starts a run, however fast it's pressed.
+    const token = (pendingReplay = {});
+    Promise.race([running, new Promise((r) => setTimeout(r, 1000))]).then(() => {
+      if (!destroyed && pendingReplay === token) {
+        pendingReplay = null;
+        loop();
+      }
+    });
+  };
+
+  /* On stage the walkthrough runs until the visitor reaches in. A stray
+     mouse already resting over the stage when it opens shouldn't count, so
+     hovering has to travel a little before it's a takeover; a press, a key
+     or Tabbing onto a control always is.
+     What they reach for is what they saw. A press, a touch, the wheel or a
+     key stops the script and lets go of its fake press, and everything else
+     stays as it is: the switch the walkthrough left on is still on, so the
+     first tap turns it off. A mouse that merely wandered in has aimed at
+     nothing, and gets the demo back at rest. */
+  if (live) {
+    /* A press is hit-tested against the picture from before the takeover.
+       If the takeover moved things - a reset, or a demo's own hook - a press
+       on a thing keeps it, even if it moved: that's what the visitor aimed
+       at. A press on empty space, or on something taken away, goes to
+       whatever is under the pointer now: the row that sprang back into the
+       gap it was pressed in. */
+    const retarget = (e) => {
+      const was = e.target;
+      const hit = document.elementFromPoint(e.clientX, e.clientY);
+      if (!hit || hit === was || !root.contains(hit)) return;
+      if (root.contains(was) && !was.contains(hit)) return;
+      e.stopImmediatePropagation();
+      hit.dispatchEvent(new PointerEvent(e.type, e));
+    };
+    /* A touch is hit-tested once, before its pointerover - which is already
+       the takeover - so its pointerdown still carries the old target. */
+    let stale = null;
+    /* A thumb that lands on the stage on its way to scrolling the page is no
+       visitor reaching in: the browser claims the gesture for panning and
+       cancels the pointer. A cancel that soon after a touch takeover, with
+       nothing else in between, gives the walkthrough back. */
+    let touched = null;
+    const takeover = (how, e) => {
+      if (state !== "script") return;
+      touched = e instanceof PointerEvent && e.pointerType !== "mouse" ? { id: e.pointerId, at: e.timeStamp } : null;
+      stopScript();
+      /* The walkthrough's pressed look goes with its hand. A real press puts
+         its own back on: the demo's handlers see this event after this. */
+      root.querySelectorAll(".is-pressed").forEach((el) => el.classList.remove("is-pressed"));
+      let moved = true;
+      if (instance.takeover) instance.takeover(how);
+      else if (how === "hover") instance.reset?.();
+      else moved = false;
+      setState("live");
+      if (moved && e instanceof PointerEvent && (e.type === "pointerdown" || e.pointerType !== "mouse")) stale = e.pointerId;
+    };
+    const capture = { signal: mount.signal, capture: true };
+    frame.addEventListener(
+      "pointerdown",
+      (e) => {
+        takeover("press", e);
+        if (stale !== e.pointerId) return;
+        stale = null;
+        retarget(e);
+      },
+      capture,
+    );
+    frame.addEventListener(
+      "pointercancel",
+      (e) => {
+        const t = touched;
+        touched = null;
+        if (t && t.id === e.pointerId && e.timeStamp - t.at < 400 && state === "live") replay();
+      },
+      capture,
+    );
+    // A lift, or anything else the visitor does, makes the takeover theirs for good.
+    frame.addEventListener("pointerup", () => (touched = null), capture);
+    frame.addEventListener("keydown", () => (touched = null), capture);
+    // Tab only passes through: arriving on a control is the focusin below.
+    frame.addEventListener("keydown", (e) => e.key !== "Tab" && takeover("press"), capture);
+    // Scrolling inside the stage is reaching in too - don't fight a wheel.
+    frame.addEventListener("wheel", (e) => takeover("press", e), { ...capture, passive: true });
+
+    /* A keyboard reaches in by Tabbing onto a control - its keydown fired
+       outside, so only the focus arrives here. That includes the artboard
+       itself, for a demo that made it the tab stop. A script focusing its
+       own field is no visitor, though, nor is a page focusing the artboard
+       so keys reach it: only focus that lands on the heels of a Tab counts. */
+    let tabbed = -Infinity;
+    document.addEventListener("keydown", (e) => e.key === "Tab" && (tabbed = e.timeStamp), capture);
+    frame.addEventListener("focusin", (e) => e.timeStamp - tabbed < 150 && takeover("press"), capture);
+
+    /* After a replay, hover is held off until the mouse rests for a second
+       (any move, anywhere, restarts the count) or leaves the stage. */
+    let rest = 0;
+    const settle = () => {
+      clearTimeout(rest);
+      rest = window.setTimeout(() => (armed = true), 1000);
+    };
+    disarm = () => {
+      armed = false;
+      settle();
+    };
+    document.addEventListener("pointermove", (e) => !armed && e.pointerType === "mouse" && settle(), capture);
+    mount.signal.addEventListener("abort", () => clearTimeout(rest));
+
+    /* Until then the script owns the demo, so real hover input is stopped
+       here on its way down and the demo's own handlers never fight the fake
+       cursor. Whatever tips it into a takeover is let through: the demo has
+       run reset() (or its takeover()) by the time it sees that event. */
+    for (const type of ["pointermove", "pointerover", "pointerout", "pointerenter", "pointerleave"]) {
+      frame.addEventListener(
+        type,
+        (e) => {
+          /* Leaving the stage breaks the trail - coming back in elsewhere
+             isn't travel. Reset here rather than in a bubble listener, which
+             the stopPropagation below would skip even on the frame itself. */
+          if (type === "pointerleave" && e.target === frame) {
+            prev = null;
+            armed = true;
+          }
+          if (state !== "script") return;
+          /* Touch and pen only hover the stage on their way to reaching in. Their
+             leaving is no reach - it's the tail of a touch the page took for a
+             scroll, arriving just after the walkthrough was given back. */
+          if (e.pointerType !== "mouse") {
+            if (type !== "pointerout" && type !== "pointerleave") return takeover("press", e);
+          }
+          // Held off, the trail starts over from wherever the mouse is once it isn't.
+          else if (type === "pointermove" && !armed) prev = null;
+          else if (type === "pointermove") {
+            const p = { x: e.clientX, y: e.clientY };
+            if (prev) travelled += Math.hypot(p.x - prev.x, p.y - prev.y);
+            prev = p;
+            if (travelled > 90) return takeover("hover", e);
+          }
+          e.stopPropagation();
+        },
+        capture,
+      );
+    }
+    // Compatibility mouse events trail their pointer twins, which have already
+    // decided on any takeover - while the script still owns it, they just stop.
+    for (const type of ["mousemove", "mouseover", "mouseout", "mouseenter", "mouseleave"]) {
+      frame.addEventListener(type, (e) => state === "script" && e.stopPropagation(), capture);
+    }
+  }
+
+  if (autoplay && !reduced) loop();
+  else setState(live ? "live" : "idle");
+
+  return {
+    get state() {
+      return state;
+    },
+    pause() {
+      if (paused) return;
+      paused = true;
+      root.classList.add("is-paused");
+      onPause.forEach((fn) => fn());
+      /* Freeze whatever is mid-flight too - WAAPI, CSS transitions, Motion's
+         accelerated tweens. Only running ones, so resume never replays a
+         finished animation. */
+      frozen = root.getAnimations({ subtree: true }).filter((a) => a.playState === "running");
+      frozen.forEach((a) => a.pause());
+    },
+    resume() {
+      if (!paused) return;
+      paused = false;
+      root.classList.remove("is-paused");
+      frozen.forEach((a) => a.playState === "paused" && a.play());
+      frozen = [];
+      onResume.forEach((fn) => fn());
+    },
+    replay,
+    destroy() {
+      destroyed = true;
+      stopScript();
+      mount.abort();
+      stopFrames();
+      frameLoops.clear();
+      ro.disconnect();
+      instance.destroy?.();
+      root.remove();
+    },
+    onState(fn) {
+      listeners.add(fn);
+    },
+    onSurface(fn) {
+      surfaceListeners.add(fn);
+      fn(surface);
+    },
+  };
+}
+
+/* ==================================================================
+   Demo：infinite-faq（src/demos/infinite-faq.ts）
+   ================================================================== */
+
+/* An FAQ whose last row is a question you write yourself. The five short
+   ones open and close like any accordion; the sixth is a field. Type,
+   press Enter, and the row turns into the same kind of entry - the button
+   becomes a stop square, "正在翻阅文档" shimmers for a beat, and the answer
+   streams in where an accordion answer would have opened. So the list never
+   runs out. */
+
+const W = 720;
+const H = 540;
+const LEFT = 180;
+const GAP = 60;
+const PAD = 40;
+const COL = W - PAD * 2 - LEFT - GAP;
+/* The narrow sheet: one column, the artboard's shape, scaled up to fill it. */
+const NW = 360;
+const NH = Math.floor((H * NW) / W);
+
+const FAQ = [
+  {
+    q: "潮汐是做什么的？",
+    a: "给 AI 智能体用的观测工具。每次调用、每段提示词、每一步耗时都会记下来，出问题时可以一步步回放。",
+  },
+  {
+    q: "支持哪些 SDK 版本？",
+    a: "Node 18 及以上、Python 3.9 及以上。主流的对话模型接口开箱即用，其余的可以用通用适配器接入。",
+  },
+  {
+    q: "可以私有化部署吗？",
+    a: "可以。团队版提供一个容器镜像，所有数据只留在你自己的机器上，升级时替换镜像即可。",
+  },
+  {
+    q: "提示词和回复存在哪里？",
+    a: "默认加密存放在华东区，保留 30 天；私有化部署时存在你自己的数据库里，保留多久由你决定。",
+  },
+  {
+    q: "SDK 会增加请求延迟吗？",
+    a: "不会挡在请求路径上。记录先攒在内存里，每 5 秒在后台批量上传；无服务器环境下，在函数返回前调用 flush() 即可。上传失败时这一批直接丢弃，智能体照常运行。",
+    chip: "SDK 文档",
+  },
+];
+
+/* What the field can answer. Matched on the question's words; anything else
+   gets the honest fallback. */
+const BANK = [
+  {
+    re: /评测|评估|测评|打分|eval/i,
+    a: [
+      ["可以，潮汐支持评测。"],
+      ["评测会给智能体的每次输出打分，用来追踪效果的变化。免费版每月 5 次，专业版不限次数。"],
+      ["具体做法见文档的", ["「评测」一章"], "；遇到问题，也可以到", ["示例仓库"], "里找现成的例子，或者提一个工单。"],
+    ],
+  },
+  {
+    re: /价|钱|费|免费|付|贵|套餐/,
+    a: [
+      ["免费版够一个人用：每月 1 万条记录、5 次评测。"],
+      ["专业版每人每月 ¥99，记录和评测都不限量；团队版另加私有化部署和统一账单。详见", ["价格页"], "。"],
+    ],
+  },
+  {
+    re: /团队|成员|协作|权限|同事/,
+    a: [
+      ["可以多人协作。团队版里每个项目可以单独设成员和权限，回放链接也能直接发给同事。"],
+      ["成员上限不封顶，按实际席位计费，见", ["团队版说明"], "。"],
+    ],
+  },
+  {
+    re: /删|导出|隐私|安全|数据|加密/,
+    a: [
+      ["数据全程加密，只有你的项目成员能看到。"],
+      ["在「设置 → 数据」里可以随时导出全部记录，或一键永久删除；删除后 24 小时内从备份中清除。"],
+    ],
+  },
+  {
+    re: /模型|接口|大模型|llm|api/i,
+    a: [
+      ["只要是兼容主流对话接口格式的模型都能接入，包括你自己部署的开源模型。"],
+      ["接入方式是把原来的客户端包一层，代码改动通常只有两行，见", ["快速开始"], "。"],
+    ],
+  },
+];
+const FALLBACK = [
+  ["这个问题文档里还没有现成的答案。"],
+  ["我已经把它转给了团队，通常一个工作日内会回复到你的邮箱；着急的话，可以先看看", ["常见排错"], "。"],
+];
+
+const ask = (q) => BANK.find((b) => b.re.test(q))?.a ?? FALLBACK;
+
+const CHEVRON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+/* Empty, the field ends in a small grey arrow, as in the original. */
+const PLUS = `<svg class="i-plus" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 8h7.6M8.8 5l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ARROW = `<svg class="i-arrow" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.8 8h8.4M8.6 4.4L12.2 8l-3.6 3.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const STOP = `<svg class="i-stop" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="6" rx="1.2" fill="currentColor"/></svg>`;
+
+const OPEN = { type: "spring", duration: 0.42, bounce: 0 };
+const CLOSE = { type: "spring", duration: 0.3, bounce: 0 };
+const THINK_MS = 1300;
+const CHARS_PER_S = 150;
+
+const demo = defineDemo({
+  width: W,
+  height: H,
+  background: "#0c0c0d",
+  theme: "dark",
+  css: css`
+    @keyframes infinite-faq-shimmer {
+      from { background-position: 100% 0; }
+      to { background-position: 0 0; }
+    }
+    @keyframes infinite-faq-blink {
+      50% { opacity: 0; }
+    }
+    :scope .wrap {
+      display: flex;
+      gap: ${GAP}px;
+      box-sizing: border-box;
+      width: ${W}px;
+      height: ${H}px;
+      padding: 44px ${PAD}px 0;
+    }
+    :scope {
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      color: #ededee;
+    }
+    :scope .intro { width: ${LEFT}px; flex: none; }
+    :scope .intro h3 {
+      margin: 6px 0 0;
+      font-size: 30px;
+      font-weight: 500;
+      line-height: 36px;
+      letter-spacing: -0.035em;
+    }
+    :scope .intro p {
+      margin: 14px 0 0;
+      font-size: 14px;
+      line-height: 22px;
+      color: #9a9a9a;
+    }
+    :scope .list { width: ${COL}px; }
+    :scope button {
+      padding: 0;
+      border: 0;
+      font: inherit;
+      color: inherit;
+      background: none;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    :scope button:focus-visible {
+      outline: 2px solid #8ab4ff;
+      outline-offset: 2px;
+      border-radius: 6px;
+    }
+    :scope .item { border-bottom: 1px solid #1f1f1f; }
+    :scope .q {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      width: 100%;
+      height: 58px;
+      font-size: 14.5px;
+      text-align: left;
+      transition: color 160ms ease;
+    }
+    :scope .q.is-hover { color: #b4b4b4; }
+    @media (hover: hover) and (pointer: fine) {
+      [data-demo-state="live"] :scope .q:hover { color: #b4b4b4; }
+    }
+    :scope .chev {
+      display: grid;
+      place-items: center;
+      width: 16px;
+      height: 16px;
+      flex: none;
+      color: #7c7c82;
+      transition: transform 320ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    :scope .chev svg { width: 14px; height: 14px; }
+    :scope .is-open .chev { transform: rotate(180deg); }
+    :scope .panel { height: 0; overflow: hidden; }
+    :scope .a {
+      padding: 0 28px 22px 0;
+      font-size: 14px;
+      line-height: 22px;
+      color: #a6a6a6;
+      opacity: 0;
+      filter: blur(3px);
+      transform: translateY(-4px);
+      transition: opacity 120ms ease, filter 120ms ease, transform 120ms ease;
+    }
+    :scope .is-open .a {
+      opacity: 1;
+      filter: none;
+      transform: none;
+      transition: opacity 260ms ease 80ms, filter 260ms ease 80ms, transform 340ms cubic-bezier(0.23, 1, 0.32, 1) 80ms;
+    }
+    :scope .a p { margin: 0; }
+    :scope .chip {
+      display: inline-flex;
+      align-items: center;
+      height: 30px;
+      margin-top: 16px;
+      padding: 0 12px;
+      border-radius: 999px;
+      background: #232323;
+      font-size: 13px;
+      font-weight: 500;
+      color: #f2f2f2;
+    }
+
+    /* The sixth row: a field */
+    :scope .ask {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      height: 58px;
+    }
+    :scope .field { position: relative; flex: 1; height: 100%; }
+    :scope .field input {
+      width: 100%;
+      height: 100%;
+      padding: 0;
+      border: 0;
+      outline: none;
+      background: none;
+      color: #ededee;
+      font: inherit;
+      font-size: 14.5px;
+      caret-color: #ededee;
+    }
+    :scope .field input::placeholder { color: #9a9a9a; }
+    :scope .ask:focus-within { box-shadow: inset 0 -1px 0 rgb(255 255 255 / 0.22); }
+    :scope .mirror {
+      position: absolute;
+      left: 0;
+      top: 0;
+      visibility: hidden;
+      font-size: 14.5px;
+      white-space: pre;
+    }
+    :scope .caret {
+      position: absolute;
+      top: 50%;
+      left: 0;
+      width: 1.5px;
+      height: 18px;
+      margin-top: -9px;
+      background: #ededee;
+      opacity: 0;
+      pointer-events: none;
+    }
+    :scope .is-fake-focus .caret {
+      opacity: 1;
+      animation: infinite-faq-blink 1s steps(1, end) infinite;
+    }
+    :scope .send {
+      position: relative;
+      display: grid;
+      place-items: center;
+      width: 50px;
+      height: 50px;
+      margin-right: -15px;
+      flex: none;
+    }
+    :scope .send .disc {
+      position: absolute;
+      inset: 15px;
+      border-radius: 999px;
+      background: #ededee;
+      scale: 0.4;
+      opacity: 0;
+      transition: scale 240ms cubic-bezier(0.34, 1.4, 0.64, 1), opacity 160ms ease;
+    }
+    :scope .send svg {
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      transition: opacity 140ms ease, scale 200ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    :scope .send .i-plus { color: #8a8a8a; }
+    :scope .send .i-arrow,
+    :scope .send .i-stop { color: #111; opacity: 0; scale: 0.6; }
+    :scope .send.is-pressed .disc { scale: 0.88; }
+    :scope [data-mode="ready"] .disc,
+    :scope [data-mode="busy"] .disc { scale: 1; opacity: 1; }
+    :scope [data-mode="ready"] .i-plus,
+    :scope [data-mode="busy"] .i-plus { opacity: 0; scale: 0.6; }
+    :scope [data-mode="ready"] .i-arrow { opacity: 1; scale: 1; }
+    :scope [data-mode="busy"] .i-stop { opacity: 1; scale: 1; }
+
+    :scope .reply {
+      padding: 4px 28px 0 0;
+      font-size: 14px;
+      line-height: 22px;
+      color: #c9c9ce;
+    }
+    :scope .reply p { margin: 0 0 6px; }
+    :scope .reply p:first-child { color: #ededee; }
+    :scope .reply u {
+      text-decoration-color: rgb(255 255 255 / 0.4);
+      text-underline-offset: 3px;
+    }
+    :scope .think {
+      display: inline-block;
+      font-size: 12.5px;
+      color: transparent;
+      background: linear-gradient(90deg, #8e8e93 0%, #8e8e93 35%, #f2f2f3 50%, #8e8e93 65%, #8e8e93 100%) 0 0 / 300% 100%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      animation: infinite-faq-shimmer 1.3s linear infinite;
+    }
+    :scope .reply.is-leaving { opacity: 0; transition: opacity 120ms ease; }
+
+    /* A phone shows the two columns at about 0.64x: 8px text, 32px rows.
+       Narrow and live, it goes to one column on a ${NW}px sheet scaled up to
+       fill the artboard, so it lands near 1:1 - heading on top, rows of
+       44px, and the list scrolls in place when an answer outgrows it. */
+    :scope.is-narrow .wrap {
+      flex-direction: column;
+      gap: 8px;
+      width: ${NW}px;
+      height: ${NH}px;
+      padding: 14px 18px 0;
+      transform: scale(${W / NW});
+      transform-origin: 0 0;
+    }
+    :scope.is-narrow .intro {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 4px 12px;
+      width: auto;
+    }
+    :scope.is-narrow .intro h3 { font-size: 21px; line-height: 26px; }
+    :scope.is-narrow .intro p { margin: 0; font-size: 12.5px; line-height: 18px; }
+    :scope.is-narrow .intro br { display: none; }
+    :scope.is-narrow .list {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+      width: auto;
+      overflow-y: auto;
+      scrollbar-width: none;
+    }
+    :scope.is-narrow .list::-webkit-scrollbar { display: none; }
+    :scope.is-narrow .q,
+    :scope.is-narrow .ask { height: 44px; }
+    :scope.is-narrow .a,
+    :scope.is-narrow .reply { padding-right: 6px; }
+    :scope.is-narrow .send { width: 44px; height: 44px; margin-right: -12px; }
+    /* 16px keeps a phone from zooming in when the field takes focus. */
+    :scope.is-narrow .field input,
+    :scope.is-narrow .mirror { font-size: 16px; }
+    :scope.is-narrow .send .disc { inset: 12px; }
+
+    @media (prefers-reduced-motion: reduce) {
+      :scope .q,
+      :scope .chev,
+      :scope .a,
+      :scope .is-open .a,
+      :scope .send .disc,
+      :scope .send svg { transition: none; }
+      :scope .think { animation: none; color: #8e8e93; background: none; }
+    }
+  `,
+  setup({ root, signal, cursor, wait, later, frame, reduced, live }) {
+    /* Accordion rows */
+    const rows = FAQ.map((f) => {
+      const chev = h("span", { class: "chev" });
+      chev.innerHTML = CHEVRON;
+      const q = h("button", { class: "q", type: "button", "aria-expanded": "false" }, h("span", {}, f.q), chev);
+      const a = h("div", { class: "a" }, h("p", {}, f.a));
+      if (f.chip) a.append(h("span", { class: "chip" }, f.chip));
+      const panel = h("div", { class: "panel", role: "region" }, a);
+      const item = h("div", { class: "item" }, q, panel);
+      return { item, q, panel, a };
+    });
+
+    /* The field row */
+    const input = h("input", {
+      type: "text",
+      placeholder: "还想问点什么",
+      "aria-label": "提一个问题",
+      enterkeyhint: "send",
+      autocomplete: "off",
+      maxlength: "40",
+    });
+    const mirror = h("span", { class: "mirror", "aria-hidden": "true" });
+    const caret = h("span", { class: "caret" });
+    const send = h("button", { class: "send", type: "button", "aria-label": "提问" }, h("span", { class: "disc" }));
+    send.insertAdjacentHTML("beforeend", PLUS + ARROW + STOP);
+    const askRow = h("div", { class: "ask", "data-mode": "empty" }, h("div", { class: "field" }, input, mirror, caret), send);
+    const reply = h("div", { class: "reply", "aria-live": "polite" });
+    const replyPanel = h("div", {}, reply);
+
+    const list = h("div", { class: "list" }, ...rows.map((r) => r.item), askRow, replyPanel);
+    root.append(
+      h(
+        "div",
+        { class: "wrap" },
+        h(
+          "div",
+          { class: "intro" },
+          h("h3", {}, "常见问题"),
+          h("p", {}, "简短的都在这里。", h("br"), "其余的，问小潮。"),
+        ),
+        list,
+      ),
+    );
+
+    /* Narrow and live, the one-column sheet (see the CSS). Judged by the
+       size the artboard is drawn at: under 480px wide the two columns are
+       below about 0.86x, and the sheet reads better. */
+    let narrow = false;
+    const box = root.parentElement;
+    if (live && box) {
+      const crop = () => {
+        const w = box.clientWidth;
+        const hgt = box.clientHeight;
+        if (!w || !hgt) return;
+        const next = Math.min(w / W, hgt / H) * W < 480;
+        if (next === narrow) return;
+        narrow = next;
+        root.classList.toggle("is-narrow", next);
+        list.scrollTop = 0;
+      };
+      const ro = new ResizeObserver(crop);
+      ro.observe(box);
+      signal.addEventListener("abort", () => ro.disconnect());
+      crop();
+    }
+
+    /* On the sheet the list scrolls, and follows what's opening: an
+       accordion answer for a beat, an asked one while it streams in. It
+       keeps the row's top in view and brings the bottom up to the edge. */
+    let follow = null;
+    const keepInView = (top, bottom, ms) => {
+      if (narrow) follow = { top, bottom, ms };
+    };
+    const followStep = (dt) => {
+      if (!follow) return;
+      follow.ms -= dt;
+      const lo = follow.top.offsetTop;
+      const want = Math.min(lo, follow.bottom.offsetTop + follow.bottom.offsetHeight + 8 - list.clientHeight);
+      const target = lo < list.scrollTop ? lo : Math.max(list.scrollTop, want);
+      const d = target - list.scrollTop;
+      list.scrollTop += reduced || Math.abs(d) < 1 ? d : d * Math.min(1, dt / 110);
+      if (follow.ms <= 0 && !streaming && mode !== "busy") follow = null;
+    };
+
+    /* ---- accordion ---- */
+    let open = -1;
+    const toggle = (i) => {
+      const next = open === i ? -1 : i;
+      // One thing open at a time: the asked answer counts as an entry too.
+      if (next !== -1 && (reply.childElementCount || mode === "busy")) {
+        clearReply();
+        setMode(input.value.trim() ? "ready" : "empty");
+      }
+      rows.forEach((r, k) => {
+        const on = k === next;
+        if (r.item.classList.contains("is-open") === on) return;
+        r.item.classList.toggle("is-open", on);
+        r.q.setAttribute("aria-expanded", String(on));
+        animate(r.panel, { height: on ? r.a.offsetHeight : 0 }, reduced ? { duration: 0 } : on ? OPEN : CLOSE);
+      });
+      open = next;
+      if (next !== -1) keepInView(rows[next].item, rows[next].item, 600);
+    };
+    rows.forEach((r, i) => r.q.addEventListener("click", () => toggle(i), { signal }));
+
+    let mode = "empty";
+    let asked = false;
+    const setMode = (m) => {
+      mode = m;
+      askRow.dataset.mode = m;
+      send.setAttribute("aria-label", m === "busy" ? "停止" : "提问");
+    };
+    const moveCaret = () => {
+      mirror.textContent = input.value;
+      caret.style.transform = `translateX(${mirror.offsetWidth}px)`;
+    };
+    const sync = () => {
+      moveCaret();
+      if (mode !== "busy") setMode(input.value.trim() ? "ready" : "empty");
+    };
+    const fakeFocus = (on) => {
+      askRow.classList.toggle("is-fake-focus", on);
+      moveCaret();
+    };
+
+    /* Streaming: every text node gets its share of the revealed count. */
+    let parts = [];
+    let total = 0;
+    let shown = 0;
+    let streaming = false;
+    let stopThink = null;
+    let stopClear = null;
+
+    const paint = () => {
+      for (const p of parts) {
+        const n = Math.max(0, Math.min(p.full.length, Math.floor(shown) - p.from));
+        if (p.node.length !== n) p.node.data = p.full.slice(0, n);
+      }
+    };
+
+    const build = (answer) => {
+      reply.replaceChildren();
+      parts = [];
+      total = 0;
+      for (const para of answer) {
+        const p = h("p", {});
+        for (const seg of para) {
+          const full = typeof seg === "string" ? seg : seg[0];
+          const node = document.createTextNode("");
+          p.append(typeof seg === "string" ? node : h("u", {}, node));
+          parts.push({ node, full, from: total });
+          total += full.length;
+        }
+        reply.append(p);
+      }
+      shown = 0;
+    };
+
+    frame((dt) => {
+      followStep(dt);
+      if (!streaming) return;
+      shown += (dt / 1000) * CHARS_PER_S;
+      if (shown >= total) {
+        shown = total;
+        streaming = false;
+        setMode(input.value.trim() ? "ready" : "empty");
+      }
+      paint();
+    });
+
+    const clearReply = () => {
+      stopThink?.();
+      stopClear?.();
+      stopThink = stopClear = null;
+      streaming = false;
+      parts = [];
+      reply.classList.remove("is-leaving");
+      reply.replaceChildren();
+    };
+
+    const submit = () => {
+      const q = input.value.trim();
+      if (!q || mode === "busy") return;
+      if (open !== -1) toggle(open);
+      setMode("busy");
+      asked = true;
+      keepInView(askRow, replyPanel, 400);
+      const begin = () => {
+        reply.classList.remove("is-leaving");
+        reply.replaceChildren(h("span", { class: "think" }, "正在翻阅文档"));
+        stopThink = later(() => {
+          stopThink = null;
+          build(ask(q));
+          if (reduced) {
+            shown = total;
+            paint();
+            setMode(input.value.trim() ? "ready" : "empty");
+          } else streaming = true;
+        }, reduced ? 400 : THINK_MS);
+      };
+      if (reply.childElementCount && !reduced) {
+        reply.classList.add("is-leaving");
+        stopClear = later(begin, 130);
+      } else begin();
+    };
+
+    /* Stop: keep what has streamed so far, as a chat would. */
+    const stop = () => {
+      if (stopThink) {
+        stopThink();
+        stopThink = null;
+        reply.replaceChildren();
+      }
+      streaming = false;
+      setMode(input.value.trim() ? "ready" : "empty");
+    };
+
+    /* Once a question has been answered (or the walkthrough left a draft),
+       the field's text is spent: focusing selects it, and the first key
+       that writes replaces it rather than appending to it. */
+    const WRITES = new Set(["Backspace", "Delete", "Process", "Unidentified"]);
+    input.addEventListener(
+      "input",
+      () => {
+        asked = false;
+        sync();
+      },
+      { signal },
+    );
+    input.addEventListener("focus", () => asked && input.select(), { signal });
+    // Text that arrives without a key (a paste, dictation, an IME's commit).
+    input.addEventListener(
+      "beforeinput",
+      () => {
+        if (!asked) return;
+        input.select();
+        asked = false;
+      },
+      { signal },
+    );
+    input.addEventListener(
+      "keydown",
+      (e) => {
+        if (asked && e.key !== "Enter" && !e.metaKey && !e.ctrlKey && (e.key.length === 1 || WRITES.has(e.key))) {
+          input.select();
+          asked = false;
+        }
+        if (e.isComposing || e.key !== "Enter") return;
+        e.preventDefault();
+        e.stopPropagation();
+        submit();
+      },
+      { signal },
+    );
+    send.addEventListener(
+      "click",
+      () => {
+        if (mode === "busy") stop();
+        else if (mode === "ready") submit();
+        else input.focus({ preventScroll: true });
+      },
+      { signal },
+    );
+
+    /* ---- walkthrough ---- */
+    const tapRow = async (i) => {
+      const { q } = rows[i];
+      await cursor.move(q, { offset: { x: -40, y: 4 } });
+      q.classList.add("is-hover");
+      await wait(160);
+      await cursor.click(() => toggle(i));
+    };
+    const unhover = () => rows.forEach((r) => r.q.classList.remove("is-hover"));
+
+    const QUESTION = "能做评测吗？";
+
+    const reset = () => {
+      unhover();
+      send.classList.remove("is-pressed");
+      if (open !== -1) toggle(open);
+      clearReply();
+      input.value = "";
+      asked = false;
+      follow = null;
+      list.scrollTop = 0;
+      fakeFocus(false);
+      sync();
+    };
+
+    return {
+      async script() {
+        cursor.show({ x: 600, y: 470 });
+        await wait(600);
+        await tapRow(4);
+        await wait(700);
+        await cursor.click(() => toggle(4));
+        await wait(300);
+        unhover();
+        await cursor.move(input, { offset: { x: -110, y: 2 } });
+        await wait(120);
+        await cursor.click(() => fakeFocus(true));
+        await wait(450);
+        for (const ch of QUESTION) {
+          input.value += ch;
+          sync();
+          await wait(ch === "？" ? 260 : 150 + ((ch.charCodeAt(0) * 37) % 90));
+        }
+        await wait(380);
+        submit();
+        await wait(THINK_MS + 300);
+        await cursor.move({ x: 620, y: 500 });
+        await wait(2600);
+      },
+      reset,
+      takeover(how) {
+        if (how === "hover") return reset();
+        unhover();
+        fakeFocus(false);
+        if (input.value) asked = true;
+      },
+    };
+  },
+});
+
+/* ==================================================================
+   挂载：画板按原尺寸放进 #demo，直接交给你操作，不跑演示脚本。
+   ================================================================== */
+
+{
+  const host = document.getElementById("demo");
+  // 底边裁在内容中间的 Demo（bleed）占满整个窗口：画板贴顶、向下长到窗口底边，和站点全屏试玩一样放大到 1.5 倍。
+  const bleed = demo.bleed === "bottom";
+  if (bleed) document.body.classList.add("bleed");
+  else {
+    host.style.aspectRatio = `${demo.width} / ${demo.height}`;
+    // 也按窗口高度收窄：矮窗口里整个画板缩小放下，而不是顶部被裁出窗口外。
+    host.style.maxWidth = `min(${demo.width}px, calc((100dvh - 32px) * ${demo.width} / ${demo.height}))`;
+  }
+  const background = demo.background ?? (demo.theme === "dark" ? "#111" : "#fff");
+  const controller = mountDemo(host, "infinite-faq", demo, { live: true, autoplay: false, maxScale: bleed ? 1.5 : 1, focus: true });
+  // 渐变底色已经铺满整页；画板里再画一遍会在画板边缘留下一道硬边。
+  const artboard = host.querySelector(".demo-artboard");
+  if (artboard && background.includes("gradient(")) artboard.style.background = "none";
+  // 有的 Demo 会改自己的底色（比如切到暗色），页面跟着变。
+  controller.onSurface((surface) => (document.body.style.background = surface?.color ?? background));
+}
+</script>
+</body>
+</html>

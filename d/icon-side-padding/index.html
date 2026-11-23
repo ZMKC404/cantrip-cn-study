@@ -1,0 +1,47 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="robots" content="noindex"><link rel="stylesheet" href="/cantrip-cn-study/_astro/feed.i3oLm75g.css"><link rel="stylesheet" href="/cantrip-cn-study/_astro/DetailBody.CIetCpo6.css"><script>
+(() => {
+  const base = '/cantrip-cn-study';
+  const withBase = value => {
+    if (value instanceof URL) value = value.pathname + value.search + value.hash;
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return value;
+    if (value === base || value.startsWith(base + "/")) return value;
+    return base + (value === "/" ? "/" : value);
+  };
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    if (typeof input === "string" || input instanceof URL) {
+      const url = withBase(input);
+      const method = init?.method ?? "GET";
+      if (method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(url, init);
+    }
+    if (input instanceof Request && new URL(input.url).origin === location.origin) {
+      const url = withBase(new URL(input.url).pathname + new URL(input.url).search + new URL(input.url).hash);
+      if (input.method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(new Request(url, input), init);
+    }
+    return nativeFetch(input, init);
+  };
+  for (const method of ["pushState", "replaceState"]) {
+    const original = history[method].bind(history);
+    history[method] = (state, title, url) => original(state, title, withBase(url));
+  }
+})();
+</script></head><body><template data-detail-tpl="icon-side-padding" data-at="0"><div data-part="info"><div class="info" data-astro-cid-axuhkfem><div class="lead" data-astro-cid-axuhkfem><p class="labels" data-astro-cid-axuhkfem><a href="/cantrip-cn-study/?c=principle" data-filter="c:principle" data-astro-cid-axuhkfem>设计原理</a><a href="/cantrip-cn-study/?t=auto" data-filter="t:auto" data-astro-cid-axuhkfem>自动播放</a></p><h2 id="detail-title" data-astro-cid-axuhkfem>图标那侧少留白</h2><p class="desc" data-astro-cid-axuhkfem>Michael 的一条按钮小贴士：图标旁边要的空间比文字少。图标自己就带着一圈空白，两边量着一样宽，眼睛看到的却是图标那边更空。</p><p class="byline" data-astro-cid-axuhkfem><a href="https://x.com/MichaelFilipiuk/status/2122314262064546248" target="_blank" rel="noreferrer" data-astro-cid-axuhkfem>作者：Michael Filipiuk<svg width="1em" height="1em" viewBox="0 0 256 256" data-astro-cid-axuhkfem="true" data-icon="ph:arrow-up-right-bold"><path fill="currentColor" d="M204 64v104a12 12 0 0 1-24 0V93L72.49 200.49a12 12 0 0 1-17-17L163 76H88a12 12 0 0 1 0-24h104a12 12 0 0 1 12 12"/></svg></a><span class="sep" aria-hidden="true" data-astro-cid-axuhkfem>·</span><time datetime="2026-11-17" data-astro-cid-axuhkfem>2026 年 11 月 17 日</time></p></div><div class="side" data-astro-cid-axuhkfem><div class="actions single" data-astro-cid-axuhkfem><button class="btn primary t-press" type="button" data-copy-prompt="帮我把「图标那侧少留白」这条做界面的规矩用到我的项目里。
+
+规矩：按钮里带图标时，图标那一侧的内边距要比文字那一侧小。图标自己带着一圈空白，两边数值一样，眼睛看到的是图标那侧更空。
+去哪找：所有「图标 + 文字」的按钮，图标在前在后都算，包括按钮组件的各个变体、链接按钮、带下箭头的下拉按钮。纯文字、纯图标的按钮不用动。
+怎么改：文字侧的内边距不变，只减图标侧，比文字侧少 4px 左右是常见的起点（如 16px → 12px），按项目的间距刻度取整；图标比字略小一点，图标和文字的间距收紧一点；播放三角、下拉箭头这类形状不规整的图标，再按眼睛看到的效果挪 1px 左右。
+别这样做：不要两边一起减，也不要一个个按钮单独改；改按钮组件本身，让所有带图标的按钮一起生效。
+怎么验：带图标和不带图标的按钮并排放，图标侧和文字侧的空白看起来一样宽。
+
+先在我的代码里找出所有适用的地方，列出要改哪些、打算怎么改，等我确认再动手；改完告诉我怎么验证。
+
+出处：Michael Filipiuk 的讲解，https://x.com/MichaelFilipiuk/status/2122314262064546248
+效果演示：https://cantrip.cn/i/icon-side-padding
+规矩和做法上面已经写全了，链接打不开也不影响。" data-gate="prompt" data-astro-cid-axuhkfem><svg width="1em" height="1em" viewBox="0 0 256 256" data-astro-cid-axuhkfem="true" data-icon="ph:copy-simple-bold"><path fill="currentColor" d="M180 64H40a12 12 0 0 0-12 12v140a12 12 0 0 0 12 12h140a12 12 0 0 0 12-12V76a12 12 0 0 0-12-12m-12 140H52V88h116Zm60-164v140a12 12 0 0 1-24 0V52H76a12 12 0 0 1 0-24h140a12 12 0 0 1 12 12"/></svg>复制提示词</button><button class="btn icon t-press" type="button" data-copy-link="/i/icon-side-padding" aria-label="复制链接" title="复制链接" data-astro-cid-axuhkfem><svg width="1em" height="1em" viewBox="0 0 256 256" data-astro-cid-axuhkfem="true" data-icon="ph:link-simple-bold"><path fill="currentColor" d="m87.5 151.52l64-64a12 12 0 0 1 17 17l-64 64a12 12 0 0 1-17-17m131-114a60.08 60.08 0 0 0-84.87 0l-30.12 30.09a12 12 0 0 0 17 17l30.07-30.06a36 36 0 0 1 50.93 50.92l-30.11 30.05a12 12 0 1 0 17 17l30.08-30.06a60.09 60.09 0 0 0-.03-84.91ZM135.52 171.4l-30.07 30.08a36 36 0 0 1-50.92-50.93l30.06-30.07a12 12 0 0 0-17-17l-30.04 30.1a60 60 0 0 0 84.88 84.87l30.06-30.07a12 12 0 0 0-17-17Z"/></svg></button></div><dl class="meta" data-astro-cid-axuhkfem><div data-astro-cid-axuhkfem><dt data-astro-cid-axuhkfem>英文</dt><dd lang="en" data-astro-cid-axuhkfem>Icon-Side Padding</dd></div><div data-astro-cid-axuhkfem><dt data-astro-cid-axuhkfem>风格</dt><dd data-astro-cid-axuhkfem>极简、技术感</dd></div><div data-astro-cid-axuhkfem><dt data-astro-cid-axuhkfem>色调</dt><dd data-astro-cid-axuhkfem>浅色</dd></div></dl></div><section class="notes" data-astro-cid-axuhkfem><h3 data-astro-cid-axuhkfem>设计要点</h3><div data-astro-cid-axuhkfem><p>按钮的左右留白，通常量着一样宽。可文字和图标不是一种东西：文字是实打实的一整块，边缘就是字的边缘；图标画在一个方框里，图形四周本来就空着一圈，三角、箭头这种形状更是只占了框的一部分。边距一样，算上这圈空白，图标那侧看起来就宽出一截。</p>
+<p>Michael 的意思是把这一截收回来：图标那一侧少留一点，图标在前在后都一样。播放三角、下拉箭头这类形状不规整的图形，量着居中常常看着不正，也是同一个原因。说到底就一句话：空间按眼睛看到的分，不按数值分。</p>
+<p>很多按钮说不上哪里不对，只是看着有点松、有点歪，问题常常就出在这几像素上。看过这条，再看自己做的按钮，会先去看图标那一侧。</p>
+</div></section></div></div><div data-part="stage"><div class="slides" data-astro-cid-axuhkfem><figure class="slide" data-slide="0" style="--r:1;--mw:720px;--mwt:720px" data-astro-cid-axuhkfem><video class="m" src="https://cantrip.cn/x/michaelfilipiuk-546248-hd.mp4" poster="/cantrip-cn-study/x/michaelfilipiuk-546248.webp" width="720" height="720" muted loop playsinline autoplay preload="auto" data-astro-cid-kg7vladn></video></figure></div></div></template></body></html>
