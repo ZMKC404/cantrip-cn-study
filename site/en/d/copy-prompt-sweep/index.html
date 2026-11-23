@@ -1,0 +1,41 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex"><link rel="stylesheet" href="/cantrip-cn-study/_astro/feed.i3oLm75g.css"><link rel="stylesheet" href="/cantrip-cn-study/_astro/DetailBody.CIetCpo6.css"><script>
+(() => {
+  const base = '/cantrip-cn-study';
+  const withBase = value => {
+    if (value instanceof URL) value = value.pathname + value.search + value.hash;
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return value;
+    if (value === base || value.startsWith(base + "/")) return value;
+    return base + (value === "/" ? "/" : value);
+  };
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    if (typeof input === "string" || input instanceof URL) {
+      const url = withBase(input);
+      const method = init?.method ?? "GET";
+      if (method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(url, init);
+    }
+    if (input instanceof Request && new URL(input.url).origin === location.origin) {
+      const url = withBase(new URL(input.url).pathname + new URL(input.url).search + new URL(input.url).hash);
+      if (input.method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(new Request(url, input), init);
+    }
+    return nativeFetch(input, init);
+  };
+  for (const method of ["pushState", "replaceState"]) {
+    const original = history[method].bind(history);
+    history[method] = (state, title, url) => original(state, title, withBase(url));
+  }
+})();
+</script></head><body><template data-detail-tpl="copy-prompt-sweep" data-at="2"><div data-part="info"><div class="info" data-astro-cid-axuhkfem><div class="lead" data-astro-cid-axuhkfem><p class="labels" data-astro-cid-axuhkfem><a href="/cantrip-cn-study/en?c=micro" data-filter="c:micro" data-astro-cid-axuhkfem>Micro &amp; Motion</a><a href="/cantrip-cn-study/en?t=click" data-filter="t:click" data-astro-cid-axuhkfem>Click</a></p><h2 id="detail-title" data-astro-cid-axuhkfem>Copy Prompt Sweep</h2><p class="desc" data-astro-cid-axuhkfem>Petar hides the label swap behind a band of light: the moment “Copy prompt” becomes “Copied!” is covered by the sweeping gradient, so the eye sees light passing, not text flickering.</p><p class="byline" data-astro-cid-axuhkfem><a href="https://x.com/kippe07/status/2122278471090966873" target="_blank" rel="noreferrer" data-astro-cid-axuhkfem>By Petar Cirkovic<svg width="1em" height="1em" viewBox="0 0 256 256" data-astro-cid-axuhkfem="true" data-icon="ph:arrow-up-right-bold"><path fill="currentColor" d="M204 64v104a12 12 0 0 1-24 0V93L72.49 200.49a12 12 0 0 1-17-17L163 76H88a12 12 0 0 1 0-24h104a12 12 0 0 1 12 12"/></svg></a><span class="sep" aria-hidden="true" data-astro-cid-axuhkfem>·</span><time datetime="2026-11-17" data-astro-cid-axuhkfem>Nov 17, 2026</time></p></div><div class="side" data-astro-cid-axuhkfem><div class="actions single" data-astro-cid-axuhkfem><button class="btn primary t-press" type="button" data-copy-prompt="Help me build &quot;Copy Prompt Sweep&quot; in my project: Petar hides the label swap behind a band of light: the moment “Copy prompt” becomes “Copied!” is covered by the sweeping gradient, so the eye sees light passing, not text flickering.
+What's on screen: A light grey pill button centred on white, three overlapping white round icons on the left (an orange starburst, a black cube, a black knot) and “Copy prompt” on the right; on click a purple-to-orange gradient light sweeps from left to right, the label turns into “Copied!”, and the light fades.
+
+Original: https://x.com/kippe07/status/2122278471090966873
+See it here: https://cantrip.cn/en/i/copy-prompt-sweep
+
+Follow the original's interaction and motion, written in my project's existing stack and styles. If you can't open a link, tell me first and I'll paste its content; don't guess from the title." data-gate="prompt" data-astro-cid-axuhkfem><svg width="1em" height="1em" viewBox="0 0 256 256" data-astro-cid-axuhkfem="true" data-icon="ph:copy-simple-bold"><path fill="currentColor" d="M180 64H40a12 12 0 0 0-12 12v140a12 12 0 0 0 12 12h140a12 12 0 0 0 12-12V76a12 12 0 0 0-12-12m-12 140H52V88h116Zm60-164v140a12 12 0 0 1-24 0V52H76a12 12 0 0 1 0-24h140a12 12 0 0 1 12 12"/></svg>Copy prompt</button><button class="btn icon t-press" type="button" data-copy-link="/en/i/copy-prompt-sweep" aria-label="Copy link" title="Copy link" data-astro-cid-axuhkfem><svg width="1em" height="1em" viewBox="0 0 256 256" data-astro-cid-axuhkfem="true" data-icon="ph:link-simple-bold"><path fill="currentColor" d="m87.5 151.52l64-64a12 12 0 0 1 17 17l-64 64a12 12 0 0 1-17-17m131-114a60.08 60.08 0 0 0-84.87 0l-30.12 30.09a12 12 0 0 0 17 17l30.07-30.06a36 36 0 0 1 50.93 50.92l-30.11 30.05a12 12 0 1 0 17 17l30.08-30.06a60.09 60.09 0 0 0-.03-84.91ZM135.52 171.4l-30.07 30.08a36 36 0 0 1-50.92-50.93l30.06-30.07a12 12 0 0 0-17-17l-30.04 30.1a60 60 0 0 0 84.88 84.87l30.06-30.07a12 12 0 0 0-17-17Z"/></svg></button></div><dl class="meta" data-astro-cid-axuhkfem><div data-astro-cid-axuhkfem><dt data-astro-cid-axuhkfem>Style</dt><dd data-astro-cid-axuhkfem>Soft, Minimal</dd></div><div data-astro-cid-axuhkfem><dt data-astro-cid-axuhkfem>Tone</dt><dd data-astro-cid-axuhkfem>Light</dd></div></dl></div><section class="notes" data-astro-cid-axuhkfem><h3 data-astro-cid-axuhkfem>Design notes</h3><div data-astro-cid-axuhkfem><p>Copying has no picture of its own; the clipboard is invisible, so the button has to act it out. It is the same thinking as the <a href="/cantrip-cn-study/en/i/receipt-printer">Checkout Slip Printer</a>, which turns an invisible payment into a slip of paper feeding out, except that copying is quick and small enough that a slip would be too much and a band of light is enough.</p>
+<p>The usual answer is to swap the label to “Copied!” on the spot, which is over in an instant: the eye can miss it, and the button seems to jump. Petar sends a purple-to-orange band of light across the button from left to right, and the label changes wherever the band passes. The jump is covered by the light, and what is left is a movement with a direction. The light starts from the AI tool icons, so the direction itself seems to say “sent”.</p>
+<p>Once the light has passed it fades, “Copied!” stays for a moment and then turns back, the whole response takes a second or two after the click, and the button is a quiet grey pill again.</p>
+</div></section></div></div><div data-part="stage"><div class="slides" data-astro-cid-axuhkfem><figure class="slide" data-slide="0" style="--r:1;--mw:720px;--mwt:720px" data-astro-cid-axuhkfem><video class="m" src="https://cantrip.cn/x/kippe07-966873-hd.mp4" poster="/cantrip-cn-study/x/kippe07-966873.webp" width="720" height="720" muted loop playsinline autoplay preload="auto" data-astro-cid-kg7vladn></video></figure></div></div></template></body></html>

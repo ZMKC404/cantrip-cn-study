@@ -1,0 +1,47 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex"><link rel="stylesheet" href="/cantrip-cn-study/_astro/feed.i3oLm75g.css"><link rel="stylesheet" href="/cantrip-cn-study/_astro/DetailBody.CIetCpo6.css"><script>
+(() => {
+  const base = '/cantrip-cn-study';
+  const withBase = value => {
+    if (value instanceof URL) value = value.pathname + value.search + value.hash;
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return value;
+    if (value === base || value.startsWith(base + "/")) return value;
+    return base + (value === "/" ? "/" : value);
+  };
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    if (typeof input === "string" || input instanceof URL) {
+      const url = withBase(input);
+      const method = init?.method ?? "GET";
+      if (method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(url, init);
+    }
+    if (input instanceof Request && new URL(input.url).origin === location.origin) {
+      const url = withBase(new URL(input.url).pathname + new URL(input.url).search + new URL(input.url).hash);
+      if (input.method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(new Request(url, input), init);
+    }
+    return nativeFetch(input, init);
+  };
+  for (const method of ["pushState", "replaceState"]) {
+    const original = history[method].bind(history);
+    history[method] = (state, title, url) => original(state, title, withBase(url));
+  }
+})();
+</script></head><body><template data-detail-tpl="movebefore-embed-move" data-at="20"><div data-part="info"><div class="info" data-astro-cid-axuhkfem><div class="lead" data-astro-cid-axuhkfem><p class="labels" data-astro-cid-axuhkfem><a href="/cantrip-cn-study/en?c=principle" data-filter="c:principle" data-astro-cid-axuhkfem>Design Principles</a><a href="/cantrip-cn-study/en?t=auto" data-filter="t:auto" data-astro-cid-axuhkfem>Autoplay</a></p><h2 id="detail-title" data-astro-cid-axuhkfem>Move Without Reload</h2><p class="desc" data-astro-cid-axuhkfem>A player that moves without starting over. Gabriel sets two approaches side by side: appendChild goes back to 00:00, moveBefore carries on from 00:11.</p><p class="byline" data-astro-cid-axuhkfem><a href="https://x.com/gabriell_lab/status/2108890580529099211" target="_blank" rel="noreferrer" data-astro-cid-axuhkfem>By Gabriel<svg width="1em" height="1em" viewBox="0 0 256 256" data-astro-cid-axuhkfem="true" data-icon="ph:arrow-up-right-bold"><path fill="currentColor" d="M204 64v104a12 12 0 0 1-24 0V93L72.49 200.49a12 12 0 0 1-17-17L163 76H88a12 12 0 0 1 0-24h104a12 12 0 0 1 12 12"/></svg></a><span class="sep" aria-hidden="true" data-astro-cid-axuhkfem>·</span><time datetime="2026-11-06" data-astro-cid-axuhkfem>Nov 6, 2026</time></p></div><div class="side" data-astro-cid-axuhkfem><div class="actions single" data-astro-cid-axuhkfem><button class="btn primary t-press" type="button" data-copy-prompt="Help me apply &quot;Move Without Reload&quot;, a rule for building interfaces, to my project.
+
+The rule: when a stateful node (a playing video, an iframe embed, a form being typed into) moves elsewhere on the page, appendChild and insertBefore take it out of the document and put it back: the iframe reloads, the video starts over, focus is lost. The newer moveBefore only changes its position, and the state comes along.
+Where to look: mini players, moving a player from a list into a detail view, drag-to-rearrange layouts, and any other code moving the same node between containers. If a framework renders it, first check whether a change of parent is remounting the whole thing.
+What to change: when moving a node, check &quot;moveBefore&quot; in the target parent; if it's there, call parent.moveBefore(node, reference), otherwise fall back to parent.insertBefore(node, reference). moveBefore throws unless both the node and the target parent are in the page, so wrap it in try/catch and fall back to insertBefore.
+Don't: &quot;move&quot; by cloning the node or setting src again; that's a reload.
+How to check: move a video midway through playback; it should keep playing from where it was, not from 00:00. Try once in a browser with moveBefore (Chrome 133 and later) and once without; the latter should at least not throw.
+
+First find every place in my code it applies to, and list what you would change and how. Wait for my go-ahead before editing; when you're done, tell me how to check it.
+
+Source: Gabriel's explainer, https://x.com/gabriell_lab/status/2108890580529099211
+See it here: https://cantrip.cn/en/i/movebefore-embed-move
+The rule and the steps are all above, so it's fine if the links don't open." data-gate="prompt" data-astro-cid-axuhkfem><svg width="1em" height="1em" viewBox="0 0 256 256" data-astro-cid-axuhkfem="true" data-icon="ph:copy-simple-bold"><path fill="currentColor" d="M180 64H40a12 12 0 0 0-12 12v140a12 12 0 0 0 12 12h140a12 12 0 0 0 12-12V76a12 12 0 0 0-12-12m-12 140H52V88h116Zm60-164v140a12 12 0 0 1-24 0V52H76a12 12 0 0 1 0-24h140a12 12 0 0 1 12 12"/></svg>Copy prompt</button><button class="btn icon t-press" type="button" data-copy-link="/en/i/movebefore-embed-move" aria-label="Copy link" title="Copy link" data-astro-cid-axuhkfem><svg width="1em" height="1em" viewBox="0 0 256 256" data-astro-cid-axuhkfem="true" data-icon="ph:link-simple-bold"><path fill="currentColor" d="m87.5 151.52l64-64a12 12 0 0 1 17 17l-64 64a12 12 0 0 1-17-17m131-114a60.08 60.08 0 0 0-84.87 0l-30.12 30.09a12 12 0 0 0 17 17l30.07-30.06a36 36 0 0 1 50.93 50.92l-30.11 30.05a12 12 0 1 0 17 17l30.08-30.06a60.09 60.09 0 0 0-.03-84.91ZM135.52 171.4l-30.07 30.08a36 36 0 0 1-50.92-50.93l30.06-30.07a12 12 0 0 0-17-17l-30.04 30.1a60 60 0 0 0 84.88 84.87l30.06-30.07a12 12 0 0 0-17-17Z"/></svg></button></div><dl class="meta" data-astro-cid-axuhkfem><div data-astro-cid-axuhkfem><dt data-astro-cid-axuhkfem>Style</dt><dd data-astro-cid-axuhkfem>Technical, Minimal</dd></div><div data-astro-cid-axuhkfem><dt data-astro-cid-axuhkfem>Tone</dt><dd data-astro-cid-axuhkfem>Light</dd></div><div data-astro-cid-axuhkfem><dt data-astro-cid-axuhkfem>Built with</dt><dd data-astro-cid-axuhkfem>JavaScript</dd></div></dl></div><section class="notes" data-astro-cid-axuhkfem><h3 data-astro-cid-axuhkfem>Design notes</h3><div data-astro-cid-axuhkfem><p>Two identical players are moved at the same time, and the results sit next to each other: the one on the left goes back to 00:00 after the move, the one on the right keeps playing from 00:11. The difference is a single DOM call.</p>
+<p>appendChild takes the iframe out and puts it back, so the page treats it as a new embed and loads it again. moveBefore only changes the position. The node never leaves the document, so the playback state goes along with it.</p>
+<p>Usage is two lines: check <code>"moveBefore" in slot</code> first, call <code>slot.moveBefore(player, null)</code> if it’s there, and fall back to <code>slot.insertBefore(player, null)</code> if not. Not every browser supports it yet, so keep the fallback.</p>
+</div></section></div></div><div data-part="stage"><div class="slides" data-astro-cid-axuhkfem><figure class="slide" data-slide="0" style="--r:1.3333333333333333;--mw:720px;--mwt:720px" data-astro-cid-axuhkfem><video class="m" src="https://cantrip.cn/x/gabriell_lab-099211-hd.mp4" poster="/cantrip-cn-study/x/gabriell_lab-099211.webp" width="720" height="540" muted loop playsinline autoplay preload="auto" data-astro-cid-kg7vladn></video></figure></div></div></template></body></html>

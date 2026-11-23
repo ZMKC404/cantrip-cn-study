@@ -1,0 +1,1411 @@
+<!doctype html>
+<!--
+  拖拽排序 · Lifted List Reorder
+  Cantrip 的一条交互实现：https://cantrip.cn/i/drag-reorder
+
+  怎么用
+    · 用浏览器直接打开这个文件就能玩，不用构建。
+    · <script type="module"> 里依次是：Cantrip 的 Demo 运行时（mountDemo 等，
+      负责缩放画板、注入样式、管理事件），然后是这个 Demo 本身
+      （defineDemo({ width, height, css, setup })），最后一行把它挂到 #demo 上。
+    · 搬进自己的项目：交互都在 setup() 里，ctx.root 是画板元素；css 里的
+      :scope 会被替换成 .d-drag-reorder。不需要演示脚本的话，script/reset 可以删掉。
+
+  依赖
+    · Motion 12.43.0（https://motion.dev），由下面的 import map 从 esm.sh 加载，需要联网。
+      也可以 npm i motion 后删掉 import map，改成本地导入：import { animate } from "motion"。
+
+  源文件：src/demos/drag-reorder.ts 与 src/demos/_kit.ts（构建时生成）。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拖拽排序 · Cantrip</title>
+<!-- 也可以 npm i motion 后删掉这段 import map，改成本地导入。 -->
+<script type="importmap">
+{ "imports": { "motion": "https://esm.sh/motion@12.43.0" } }
+</script>
+<style>
+/* 页面：画板居中，四周留白。 */
+html, body { height: 100%; }
+body {
+  margin: 0;
+  display: grid;
+  place-items: safe center;
+  padding: 16px;
+  box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+/* 画板的底边本来就裁在内容中间的 Demo（bleed）：#demo 铺满窗口，裁口落在窗口底边。 */
+body.bleed { display: block; padding: 0; }
+body.bleed #demo { height: 100vh; height: 100dvh; }
+#demo { position: relative; width: 100%; overflow: hidden; }
+
+/* 基础重置（节选自 Tailwind preflight，站点上 Demo 就是在它之上画的）。 */
+@layer reset {
+  *, ::before, ::after { box-sizing: border-box; margin: 0; padding: 0; border: 0 solid; }
+  h1, h2, h3, h4, h5, h6 { font-size: inherit; font-weight: inherit; }
+  a { color: inherit; text-decoration: inherit; }
+  ol, ul, menu { list-style: none; }
+  img, svg, video, canvas { display: block; vertical-align: middle; }
+  img, video { max-width: 100%; height: auto; }
+  button, input, select, textarea {
+    font: inherit; letter-spacing: inherit; color: inherit;
+    border-radius: 0; background-color: transparent; opacity: 1;
+  }
+  button { cursor: pointer; }
+  ::placeholder { opacity: 1; color: color-mix(in oklab, currentcolor 50%, transparent); }
+  [hidden]:where(:not([hidden="until-found"])) { display: none !important; }
+}
+
+/* 画板：固定尺寸，由运行时按容器等比缩放。 */
+.demo-artboard {
+  position: absolute;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #111;
+  text-align: left;
+  -webkit-font-smoothing: antialiased;
+}
+.demo-artboard[data-theme="dark"] { color: #f5f5f5; }
+.demo-artboard :where(button, input) { font: inherit; color: inherit; }
+.demo-artboard:not([inert]) { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.demo-artboard :where(input, textarea, [contenteditable]) { -webkit-user-select: text; user-select: text; }
+.demo-artboard[tabindex="-1"]:focus { outline: none; }
+</style>
+<script>
+(() => {
+  const base = '/cantrip-cn-study';
+  const withBase = value => {
+    if (value instanceof URL) value = value.pathname + value.search + value.hash;
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return value;
+    if (value === base || value.startsWith(base + "/")) return value;
+    return base + (value === "/" ? "/" : value);
+  };
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    if (typeof input === "string" || input instanceof URL) {
+      const url = withBase(input);
+      const method = init?.method ?? "GET";
+      if (method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(url, init);
+    }
+    if (input instanceof Request && new URL(input.url).origin === location.origin) {
+      const url = withBase(new URL(input.url).pathname + new URL(input.url).search + new URL(input.url).hash);
+      if (input.method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(new Request(url, input), init);
+    }
+    return nativeFetch(input, init);
+  };
+  for (const method of ["pushState", "replaceState"]) {
+    const original = history[method].bind(history);
+    history[method] = (state, title, url) => original(state, title, withBase(url));
+  }
+})();
+</script></head>
+<body>
+<div id="demo"></div>
+<script type="module">
+import { animate, motionValue } from "motion";
+
+/* ==================================================================
+   Cantrip 的 Demo 运行时（src/demos/_kit.ts）
+   ================================================================== */
+
+/* The runtime every live demo shares.
+
+   A demo is authored once, at a fixed artboard size, and shown in two places:
+   shrunk into a feed card, where it plays a scripted walkthrough on a loop
+   with a fake cursor (the way a screen recording would), and blown up on the
+   detail stage, where the same walkthrough runs until the visitor reaches in
+   and takes over. The artboard is scaled with a transform rather than being
+   re-laid out, so a demo looks identical at 260px and at 700px. */
+
+const defineDemo = (demo) => demo;
+
+/** Tag for the `css` field - identity, it just marks the string for editors. */
+const css = String.raw;
+
+const springs = {
+  snappy: { type: "spring", duration: 0.3, bounce: 0.15 },
+  smooth: { type: "spring", duration: 0.5, bounce: 0.1 },
+  bouncy: { type: "spring", duration: 0.55, bounce: 0.35 },
+};
+
+const ease = {
+  out: [0.23, 1, 0.32, 1],
+  inOut: [0.77, 0, 0.175, 1],
+  drawer: [0.32, 0.72, 0, 1],
+};
+
+function h(
+  tag,
+  props = {},
+  ...children
+) {
+  const el = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (key === "class") el.className = value;
+    else el.setAttribute(key, value);
+  }
+  el.append(...children);
+  return el;
+}
+
+/* ------------------------------------------------------------------ */
+/* Mounting                                                            */
+/* ------------------------------------------------------------------ */
+
+const CANCELLED = Symbol("cancelled");
+const injected = new Set();
+
+function inject(id, source) {
+  if (!source || injected.has(id)) return;
+  injected.add(id);
+  const style = document.createElement("style");
+  style.dataset.demo = id;
+  style.textContent = source.replaceAll(":scope", `.d-${id}`);
+  document.head.append(style);
+}
+
+const CURSOR_SVG = `<svg viewBox="0 0 20 24" width="20" height="24" aria-hidden="true"><path d="M2.2 1.6v17.6l4.5-4.2 3 6.6 3.1-1.4-3-6.4h6.3z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+
+function mountDemo(
+  frame,
+  id,
+  demo,
+  { live = false, maxScale = Infinity, focus = false, autoplay = true } = {},
+) {
+  inject(id, demo.css);
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // A phone has no arrow: there the walkthrough is drawn as a fingertip.
+  const touch = matchMedia("(hover: none) and (pointer: coarse)").matches;
+  const mount = new AbortController();
+  const listeners = new Set();
+
+  const root = document.createElement("div");
+  root.className = `demo-artboard d-${id}`;
+  root.dataset.theme = demo.theme ?? "light";
+  root.style.width = `${demo.width}px`;
+  root.style.height = `${demo.height}px`;
+  if (demo.background) root.style.background = demo.background;
+  if (!live) root.inert = true;
+  frame.append(root);
+
+  /* A walkthrough presses its buttons with .click(): those clicks are the
+     demo's business only. Bubbling on, one reached the feed card around a
+     demo and opened its detail by itself. The demo's own listeners - on the
+     artboard or anything inside it - have all run by the time this does. */
+  for (const type of ["click", "dblclick", "pointerdown", "pointerup", "mousedown", "mouseup", "keydown", "keyup", "input", "change"]) {
+    root.addEventListener(type, (e) => e.isTrusted || e.stopPropagation(), { signal: mount.signal });
+  }
+
+  let scale = 1;
+
+  /* ---- pause plumbing: timers and animations all hang off this ---- */
+  let paused = false;
+  let frozen = [];
+  const onPause = new Set();
+  const onResume = new Set();
+
+  let script = new AbortController();
+
+  const cancelled = () => Object.assign(new Error("cancelled"), { [CANCELLED]: true });
+
+  /* A timeout whose countdown stops while the demo is paused. It belongs to
+     the mount, not to a script run - only unmount or `cancel` clears it. */
+  const later = (fn, ms) => {
+    if (mount.signal.aborted) return () => {};
+    let remaining = ms;
+    let started = 0;
+    let timer = 0;
+    const run = () => {
+      started = performance.now();
+      timer = window.setTimeout(fire, remaining);
+    };
+    const halt = () => {
+      clearTimeout(timer);
+      remaining -= performance.now() - started;
+    };
+    const cancel = () => {
+      clearTimeout(timer);
+      onPause.delete(halt);
+      onResume.delete(run);
+      mount.signal.removeEventListener("abort", cancel);
+    };
+    const fire = () => {
+      cancel();
+      fn();
+    };
+    onPause.add(halt);
+    onResume.add(run);
+    mount.signal.addEventListener("abort", cancel);
+    if (!paused) run();
+    return cancel;
+  };
+
+  const wait = (ms) =>
+    new Promise((resolve, reject) => {
+      const signal = script.signal;
+      if (signal.aborted) return reject(cancelled());
+      const abort = () => {
+        cancel();
+        reject(cancelled());
+      };
+      const cancel = later(() => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      }, ms);
+      signal.addEventListener("abort", abort);
+    });
+
+  /** Runs a numeric tween that honours pause and script cancellation. */
+  const tween = (duration, ease, onUpdate) =>
+    new Promise((resolve, reject) => {
+      const signal = script.signal;
+      if (signal.aborted) return reject(cancelled());
+      /* Reduced motion jumps straight to the end. Motion would defer even a
+         zero-length tween's one update to the next frame, after `finished`
+         has settled - so land it here, or a move resolves short of its
+         target and its onMove listeners never hear where it ended. */
+      if (reduced) {
+        onUpdate(1);
+        return resolve();
+      }
+      const controls = animate(0, 1, {
+        duration,
+        ease: ease,
+        onUpdate,
+      });
+      const halt = () => controls.pause();
+      const run = () => controls.play();
+      const abort = () => {
+        controls.stop();
+        cleanup();
+        reject(cancelled());
+      };
+      const cleanup = () => {
+        onPause.delete(halt);
+        onResume.delete(run);
+        signal.removeEventListener("abort", abort);
+      };
+      onPause.add(halt);
+      onResume.add(run);
+      signal.addEventListener("abort", abort);
+      if (paused) controls.pause();
+      controls.finished.then(() => {
+        cleanup();
+        resolve();
+      });
+    });
+
+  const local = (e) => {
+    const r = root.getBoundingClientRect();
+    return {
+      // Layout size, not demo.width/height: a bleed artboard grows taller.
+      x: (e.clientX - r.left) / (r.width / root.offsetWidth || 1),
+      y: (e.clientY - r.top) / (r.height / root.offsetHeight || 1),
+    };
+  };
+
+  const center = (el) => {
+    const r = el.getBoundingClientRect();
+    return local({ clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 });
+  };
+
+  /* ---- the fake cursor ---- */
+  const pointer = document.createElement("div");
+  pointer.className = touch ? "demo-cursor is-touch" : "demo-cursor";
+  if (!touch) pointer.innerHTML = CURSOR_SVG;
+  if (autoplay) root.append(pointer);
+
+  const pos = { x: demo.width * 0.72, y: demo.height * 0.82 };
+  let pressed = false;
+  const moveListeners = new Set();
+  // Where the hotspot sits inside the drawing: the arrow's tip, the dot's centre.
+  const tip = touch ? { x: 11, y: 11 } : { x: 2, y: 1.5 };
+  const place = () => {
+    /* In a card the cursor scales with the picture, like a screen recording
+       (and so does the poster still, shot at 2× a card). Blown up on a
+       stage it stays the size of a real one. */
+    const k = (pressed ? (touch ? 0.8 : 0.86) : 1) / (live ? Math.max(1, scale) : 1);
+    pointer.style.transform = `translate(${pos.x - tip.x}px, ${pos.y - tip.y}px) scale(${k})`;
+    pointer.classList.toggle("is-pressed", pressed);
+  };
+  const paint = () => {
+    place();
+    moveListeners.forEach((fn) => fn({ x: pos.x, y: pos.y }));
+  };
+
+  /* Contain-fit the artboard into whatever box it was given, up to
+     `maxScale`: centred, or for a `bleed` demo pinned to the top and grown
+     down to the box's floor (see `Demo.bleed`).
+     Layout size is what the observer sees, so a FLIP transform on an
+     ancestor doesn't make the demo re-scale mid-flight.
+     Its edges land on whole device pixels. Between two, the artboard's own
+     background and a layer drawn over it are each smoothed on their own,
+     and the first showed through as a hairline - a light line along a dark
+     window. So the box is snapped: its size by a hair of non-uniform
+     scale, its corner by a sub-pixel nudge measured against the frame. */
+  const hang = demo.bleed === "bottom";
+  root.style.left = root.style.top = "0";
+  root.style.transformOrigin = "0 0";
+  const fit = () => {
+    const w = frame.clientWidth;
+    const hgt = frame.clientHeight;
+    if (!w || !hgt) return;
+    scale = Math.min(w / demo.width, hgt / demo.height, maxScale * (demo.stretch ?? 1));
+    const dpr = devicePixelRatio || 1;
+    const snap = (v) => Math.round(v * dpr) / dpr;
+    const bw = snap(demo.width * scale);
+    const bh = snap(demo.height * scale);
+    // Where the frame's padding box starts on screen, so the nudge lands the corner on the grid.
+    const r = frame.getBoundingClientRect();
+    const ox = r.left + frame.clientLeft;
+    const oy = r.top + frame.clientTop;
+    const x = snap(ox + (w - bw) / 2) - ox;
+    const sy = bh / demo.height;
+    const rest = hgt - (demo.reach ?? Infinity) * sy;
+    const y = hang ? (rest > 0 ? snap(oy + rest / 2) - oy : 0) : snap(oy + (hgt - bh) / 2) - oy;
+    // Grown in whole artboard px past the box's floor; the frame clips the rest.
+    if (hang) root.style.height = `${Math.max(demo.height, Math.ceil((hgt - y) / sy))}px`;
+    root.style.transform = `translate(${x}px, ${y}px) scale(${bw / demo.width}, ${sy})`;
+    place();
+  };
+  const ro = new ResizeObserver(fit);
+  ro.observe(frame);
+  fit();
+
+  /* ---- surface: the colour the page around the artboard should be ---- */
+  let surface = null;
+  const surfaceListeners = new Set();
+  const frameBg = frame.style.backgroundColor;
+  const setSurface = (color, tone) => {
+    const next = color ? { color, tone: tone ?? demo.theme ?? "light" } : null;
+    if (next?.color === surface?.color && next?.tone === surface?.tone) return;
+    surface = next;
+    // The frame's own letterbox follows too, wherever it's mounted.
+    frame.style.backgroundColor = next ? next.color : frameBg;
+    surfaceListeners.forEach((fn) => fn(next));
+  };
+  const resolve = (t) => ("x" in t ? t : center(t));
+
+  const cursor = {
+    get x() {
+      return pos.x;
+    },
+    get y() {
+      return pos.y;
+    },
+    show(at) {
+      if (at) Object.assign(pos, resolve(at));
+      paint();
+      pointer.classList.add("is-visible");
+    },
+    hide() {
+      pointer.classList.remove("is-visible");
+    },
+    async move(to, opts = {}) {
+      const target = resolve(to);
+      const end = { x: target.x + (opts.offset?.x ?? 0), y: target.y + (opts.offset?.y ?? 0) };
+      const start = { ...pos };
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 0.5) return;
+      /* A hand doesn't travel in a ruler-straight line - bow the path a
+         little to one side, proportional to the distance covered. */
+      const bow = dist * 0.12;
+      const ctrl = {
+        x: start.x + dx / 2 - (dy / dist) * bow,
+        y: start.y + dy / 2 + (dx / dist) * bow,
+      };
+      const duration = opts.duration ?? Math.min(0.95, Math.max(0.38, dist / 700));
+      pointer.classList.add("is-visible");
+      await tween(duration, [0.45, 0, 0.2, 1], (t) => {
+        const u = 1 - t;
+        pos.x = u * u * start.x + 2 * u * t * ctrl.x + t * t * end.x;
+        pos.y = u * u * start.y + 2 * u * t * ctrl.y + t * t * end.y;
+        paint();
+      });
+    },
+    async press() {
+      pressed = true;
+      paint();
+      await wait(90);
+    },
+    async release() {
+      pressed = false;
+      paint();
+      await wait(60);
+    },
+    async click(fn) {
+      await cursor.press();
+      fn?.();
+      await cursor.release();
+    },
+    onMove(fn) {
+      moveListeners.add(fn);
+      return () => moveListeners.delete(fn);
+    },
+  };
+
+  const frameLoops = new Set();
+  let rafId = 0;
+  let last = 0;
+  const tick = (t) => {
+    const dt = Math.min(64, t - (last || t));
+    last = t;
+    frameLoops.forEach((fn) => fn(dt, t));
+    rafId = requestAnimationFrame(tick);
+  };
+  const startFrames = () => {
+    if (!rafId && frameLoops.size && !paused) {
+      last = 0;
+      rafId = requestAnimationFrame(tick);
+    }
+  };
+  const stopFrames = () => {
+    cancelAnimationFrame(rafId);
+    rafId = 0;
+  };
+  onPause.add(stopFrames);
+  onResume.add(startFrames);
+
+  const ctx = {
+    root,
+    live,
+    reduced,
+    signal: mount.signal,
+    wait,
+    later,
+    cursor,
+    local,
+    center,
+    frame(fn) {
+      frameLoops.add(fn);
+      startFrames();
+    },
+    setSurface,
+  };
+
+  const instance = demo.setup(ctx) ?? {};
+  if (autoplay) root.append(pointer); // keep the cursor above whatever setup built
+
+  /* Focusable by script and by a click on its bare surface, but no extra
+     tab stop - unless the demo made it one itself. */
+  if (live && focus) {
+    if (!root.hasAttribute("tabindex")) root.tabIndex = -1;
+    root.focus({ preventScroll: true, focusVisible: false });
+  }
+
+  /* While the walkthrough plays, the demo's live regions - a transcript, a
+     message's status, a reader's caption - would read the fake visitor's
+     every step aloud. They're silenced for the script and given back the
+     moment the demo is the visitor's. */
+  const hushed = new Map();
+  const hush = (on) => {
+    if (on) {
+      root.querySelectorAll("[aria-live], [role=status], [role=log], [role=alert], [role=timer], [role=marquee]").forEach((el) => {
+        if (hushed.has(el)) return;
+        hushed.set(el, el.getAttribute("aria-live"));
+        el.setAttribute("aria-live", "off");
+      });
+    } else {
+      hushed.forEach((was, el) => (was === null ? el.removeAttribute("aria-live") : el.setAttribute("aria-live", was)));
+      hushed.clear();
+    }
+  };
+
+  /* ---- script loop ---- */
+  let state = "idle";
+  const setState = (next) => {
+    state = next;
+    frame.dataset.demoState = next;
+    if (live) hush(next === "script");
+    listeners.forEach((fn) => fn(next));
+  };
+
+  /* wait()/tween() read the *current* controller when called, so a new run
+     must not start until the old one has actually left its script - or a
+     pass still awaiting something outside the kit would pick up the new
+     signal and keep running alongside it. */
+  let running = Promise.resolve();
+  let pendingReplay = null;
+  let destroyed = false;
+
+  /* How far a real mouse has hovered since this run started - see the
+     takeover below. */
+  let travelled = 0;
+  let prev = null;
+  /* Whether hovering may take over at all. A replay is asked for with the
+     mouse, which then moves off the button it pressed: that isn't reaching
+     in. Hover waits until the mouse has rested a second, or has left the
+     stage and come back. */
+  let armed = true;
+  let disarm = () => {};
+
+  const loop = () => (running = run());
+
+  const run = async () => {
+    if (!instance.script) return;
+    script = new AbortController();
+    const signal = script.signal;
+    /* Every run, a replay included, gets the full hover grace again. Left
+       over, the travel that took the last one over would end this one on
+       the first nudge, and a stale `prev` would add one big jump. */
+    travelled = 0;
+    prev = null;
+    setState("script");
+    cursor.show();
+    while (!signal.aborted) {
+      try {
+        await instance.script(ctx);
+        await wait(200);
+      } catch (error) {
+        if ((error)?.[CANCELLED] || signal.aborted) break;
+        console.error(`[demo:${id}]`, error);
+        break;
+      }
+      if (!signal.aborted) instance.reset?.();
+    }
+  };
+
+  const stopScript = () => {
+    script.abort();
+    pressed = false;
+    cursor.hide();
+  };
+
+  const replay = () => {
+    stopScript();
+    instance.reset?.();
+    disarm();
+    // Wait for the cancelled pass to unwind (bounded, in case it's stuck).
+    // Only the latest request starts a run, however fast it's pressed.
+    const token = (pendingReplay = {});
+    Promise.race([running, new Promise((r) => setTimeout(r, 1000))]).then(() => {
+      if (!destroyed && pendingReplay === token) {
+        pendingReplay = null;
+        loop();
+      }
+    });
+  };
+
+  /* On stage the walkthrough runs until the visitor reaches in. A stray
+     mouse already resting over the stage when it opens shouldn't count, so
+     hovering has to travel a little before it's a takeover; a press, a key
+     or Tabbing onto a control always is.
+     What they reach for is what they saw. A press, a touch, the wheel or a
+     key stops the script and lets go of its fake press, and everything else
+     stays as it is: the switch the walkthrough left on is still on, so the
+     first tap turns it off. A mouse that merely wandered in has aimed at
+     nothing, and gets the demo back at rest. */
+  if (live) {
+    /* A press is hit-tested against the picture from before the takeover.
+       If the takeover moved things - a reset, or a demo's own hook - a press
+       on a thing keeps it, even if it moved: that's what the visitor aimed
+       at. A press on empty space, or on something taken away, goes to
+       whatever is under the pointer now: the row that sprang back into the
+       gap it was pressed in. */
+    const retarget = (e) => {
+      const was = e.target;
+      const hit = document.elementFromPoint(e.clientX, e.clientY);
+      if (!hit || hit === was || !root.contains(hit)) return;
+      if (root.contains(was) && !was.contains(hit)) return;
+      e.stopImmediatePropagation();
+      hit.dispatchEvent(new PointerEvent(e.type, e));
+    };
+    /* A touch is hit-tested once, before its pointerover - which is already
+       the takeover - so its pointerdown still carries the old target. */
+    let stale = null;
+    /* A thumb that lands on the stage on its way to scrolling the page is no
+       visitor reaching in: the browser claims the gesture for panning and
+       cancels the pointer. A cancel that soon after a touch takeover, with
+       nothing else in between, gives the walkthrough back. */
+    let touched = null;
+    const takeover = (how, e) => {
+      if (state !== "script") return;
+      touched = e instanceof PointerEvent && e.pointerType !== "mouse" ? { id: e.pointerId, at: e.timeStamp } : null;
+      stopScript();
+      /* The walkthrough's pressed look goes with its hand. A real press puts
+         its own back on: the demo's handlers see this event after this. */
+      root.querySelectorAll(".is-pressed").forEach((el) => el.classList.remove("is-pressed"));
+      let moved = true;
+      if (instance.takeover) instance.takeover(how);
+      else if (how === "hover") instance.reset?.();
+      else moved = false;
+      setState("live");
+      if (moved && e instanceof PointerEvent && (e.type === "pointerdown" || e.pointerType !== "mouse")) stale = e.pointerId;
+    };
+    const capture = { signal: mount.signal, capture: true };
+    frame.addEventListener(
+      "pointerdown",
+      (e) => {
+        takeover("press", e);
+        if (stale !== e.pointerId) return;
+        stale = null;
+        retarget(e);
+      },
+      capture,
+    );
+    frame.addEventListener(
+      "pointercancel",
+      (e) => {
+        const t = touched;
+        touched = null;
+        if (t && t.id === e.pointerId && e.timeStamp - t.at < 400 && state === "live") replay();
+      },
+      capture,
+    );
+    // A lift, or anything else the visitor does, makes the takeover theirs for good.
+    frame.addEventListener("pointerup", () => (touched = null), capture);
+    frame.addEventListener("keydown", () => (touched = null), capture);
+    // Tab only passes through: arriving on a control is the focusin below.
+    frame.addEventListener("keydown", (e) => e.key !== "Tab" && takeover("press"), capture);
+    // Scrolling inside the stage is reaching in too - don't fight a wheel.
+    frame.addEventListener("wheel", (e) => takeover("press", e), { ...capture, passive: true });
+
+    /* A keyboard reaches in by Tabbing onto a control - its keydown fired
+       outside, so only the focus arrives here. That includes the artboard
+       itself, for a demo that made it the tab stop. A script focusing its
+       own field is no visitor, though, nor is a page focusing the artboard
+       so keys reach it: only focus that lands on the heels of a Tab counts. */
+    let tabbed = -Infinity;
+    document.addEventListener("keydown", (e) => e.key === "Tab" && (tabbed = e.timeStamp), capture);
+    frame.addEventListener("focusin", (e) => e.timeStamp - tabbed < 150 && takeover("press"), capture);
+
+    /* After a replay, hover is held off until the mouse rests for a second
+       (any move, anywhere, restarts the count) or leaves the stage. */
+    let rest = 0;
+    const settle = () => {
+      clearTimeout(rest);
+      rest = window.setTimeout(() => (armed = true), 1000);
+    };
+    disarm = () => {
+      armed = false;
+      settle();
+    };
+    document.addEventListener("pointermove", (e) => !armed && e.pointerType === "mouse" && settle(), capture);
+    mount.signal.addEventListener("abort", () => clearTimeout(rest));
+
+    /* Until then the script owns the demo, so real hover input is stopped
+       here on its way down and the demo's own handlers never fight the fake
+       cursor. Whatever tips it into a takeover is let through: the demo has
+       run reset() (or its takeover()) by the time it sees that event. */
+    for (const type of ["pointermove", "pointerover", "pointerout", "pointerenter", "pointerleave"]) {
+      frame.addEventListener(
+        type,
+        (e) => {
+          /* Leaving the stage breaks the trail - coming back in elsewhere
+             isn't travel. Reset here rather than in a bubble listener, which
+             the stopPropagation below would skip even on the frame itself. */
+          if (type === "pointerleave" && e.target === frame) {
+            prev = null;
+            armed = true;
+          }
+          if (state !== "script") return;
+          /* Touch and pen only hover the stage on their way to reaching in. Their
+             leaving is no reach - it's the tail of a touch the page took for a
+             scroll, arriving just after the walkthrough was given back. */
+          if (e.pointerType !== "mouse") {
+            if (type !== "pointerout" && type !== "pointerleave") return takeover("press", e);
+          }
+          // Held off, the trail starts over from wherever the mouse is once it isn't.
+          else if (type === "pointermove" && !armed) prev = null;
+          else if (type === "pointermove") {
+            const p = { x: e.clientX, y: e.clientY };
+            if (prev) travelled += Math.hypot(p.x - prev.x, p.y - prev.y);
+            prev = p;
+            if (travelled > 90) return takeover("hover", e);
+          }
+          e.stopPropagation();
+        },
+        capture,
+      );
+    }
+    // Compatibility mouse events trail their pointer twins, which have already
+    // decided on any takeover - while the script still owns it, they just stop.
+    for (const type of ["mousemove", "mouseover", "mouseout", "mouseenter", "mouseleave"]) {
+      frame.addEventListener(type, (e) => state === "script" && e.stopPropagation(), capture);
+    }
+  }
+
+  if (autoplay && !reduced) loop();
+  else setState(live ? "live" : "idle");
+
+  return {
+    get state() {
+      return state;
+    },
+    pause() {
+      if (paused) return;
+      paused = true;
+      root.classList.add("is-paused");
+      onPause.forEach((fn) => fn());
+      /* Freeze whatever is mid-flight too - WAAPI, CSS transitions, Motion's
+         accelerated tweens. Only running ones, so resume never replays a
+         finished animation. */
+      frozen = root.getAnimations({ subtree: true }).filter((a) => a.playState === "running");
+      frozen.forEach((a) => a.pause());
+    },
+    resume() {
+      if (!paused) return;
+      paused = false;
+      root.classList.remove("is-paused");
+      frozen.forEach((a) => a.playState === "paused" && a.play());
+      frozen = [];
+      onResume.forEach((fn) => fn());
+    },
+    replay,
+    destroy() {
+      destroyed = true;
+      stopScript();
+      mount.abort();
+      stopFrames();
+      frameLoops.clear();
+      ro.disconnect();
+      instance.destroy?.();
+      root.remove();
+    },
+    onState(fn) {
+      listeners.add(fn);
+    },
+    onSurface(fn) {
+      surfaceListeners.add(fn);
+      fn(surface);
+    },
+  };
+}
+
+/* ==================================================================
+   Demo：drag-reorder（src/demos/drag-reorder.ts）
+   ================================================================== */
+
+/* Little album covers, drawn rather than gradient swatches. The sky is a CSS
+   gradient; the SVG only adds flat shapes over it, so no gradient ids that
+   two mounts of the demo on one page would fight over. */
+const SONGS = [
+  {
+    title: "晚风来信",
+    artist: "河岸乐队",
+    time: "3:42",
+    sky: "linear-gradient(180deg, #ffcf9f 0%, #ff8a6b 55%, #f0566a 100%)",
+    art: `<circle cx="25" cy="31" r="10" fill="#fff4dc"/><rect y="31" width="50" height="19" fill="#e2475f"/><path d="M14 36h22M18 40.5h14M21.5 45h7" stroke="#ffd9b8" stroke-width="1.6" stroke-linecap="round" opacity="0.8"/>`,
+  },
+  {
+    title: "慢慢走路",
+    artist: "林间",
+    time: "4:05",
+    sky: "linear-gradient(180deg, #dfe4ff 0%, #a5b0fb 100%)",
+    art: `<path d="M-2 34c10-8 18-10 27-6s17 2 27-5v29H-2z" fill="#7c83f2"/><path d="M-2 41c12-5 22-6 31-2s15 2 23-1v14H-2z" fill="#5a5fd8"/><path d="M27 50c-6-4-2-7 3-9s6-4 2-7" stroke="#fff" stroke-width="1.6" stroke-linecap="round" fill="none" opacity="0.85"/><circle cx="36" cy="14" r="4.5" fill="#fff" opacity="0.9"/>`,
+  },
+  {
+    title: "Neon Tide",
+    artist: "Kiko Blue",
+    time: "3:18",
+    sky: "linear-gradient(160deg, #10203f 0%, #0b5f7d 100%)",
+    art: `<g fill="none" stroke-linecap="round" stroke-width="2"><path d="M4 20c5-4 9-4 14 0s9 4 14 0 9-4 14 0" stroke="#5eead4"/><path d="M4 28c5-4 9-4 14 0s9 4 14 0 9-4 14 0" stroke="#38bdf8" opacity="0.85"/><path d="M4 36c5-4 9-4 14 0s9 4 14 0 9-4 14 0" stroke="#a78bfa" opacity="0.7"/></g>`,
+  },
+  {
+    title: "灯塔守夜人",
+    artist: "北方信号",
+    time: "5:01",
+    sky: "linear-gradient(180deg, #1d1b4f 0%, #3b3a8f 100%)",
+    art: `<path d="M27 19 52 8v24z" fill="#fde68a" opacity="0.38"/><path d="M22.5 20h5l1.6 22h-8.2z" fill="#f8fafc"/><path d="M22 27h6.4M21.4 34h7.6" stroke="#ef4444" stroke-width="2.6"/><rect x="22" y="16.5" width="6" height="3.5" rx="1" fill="#fcd34d"/><path d="M0 44c12-3 38-3 50 0v6H0z" fill="#14123a"/><circle cx="9" cy="11" r="0.9" fill="#fff"/><circle cx="15" cy="20" r="0.7" fill="#fff" opacity="0.7"/><circle cx="6" cy="27" r="0.7" fill="#fff" opacity="0.6"/>`,
+  },
+  {
+    title: "雨后的城",
+    artist: "小岛合唱团",
+    time: "3:57",
+    sky: "linear-gradient(180deg, #fbc2dc 0%, #c084fc 100%)",
+    art: `<g stroke="#fff" stroke-width="1.3" stroke-linecap="round" opacity="0.6"><path d="M10 6l-3 7M22 4l-3 7M34 7l-3 7M44 3l-3 7M16 15l-2 5M40 14l-2 5"/></g><path d="M0 50V33h7v-6h6v10h5V24h8v13h4v-8h7v-5h6v26z" fill="#7e3fb8"/><path d="M0 50v-7h50v7z" fill="#5b2491"/><path d="M21 28h2M21 32h2M37 30h2" stroke="#fde68a" stroke-width="1.6"/>`,
+  },
+];
+
+const GRIP = `<svg viewBox="0 0 10 16" fill="currentColor" aria-hidden="true"><circle cx="2.5" cy="3" r="1.4"/><circle cx="7.5" cy="3" r="1.4"/><circle cx="2.5" cy="8" r="1.4"/><circle cx="7.5" cy="8" r="1.4"/><circle cx="2.5" cy="13" r="1.4"/><circle cx="7.5" cy="13" r="1.4"/></svg>`;
+const PLAY = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8.5 6.2v11.6a.8.8 0 0 0 1.2.7l9.3-5.8a.8.8 0 0 0 0-1.4L9.7 5.5a.8.8 0 0 0-1.2.7z"/></svg>`;
+
+const H = 68;
+const STEP = H + 8;
+const SIDE = 32;
+/* Neighbours step aside quickly; the card you let go of lands a touch
+   softer and keeps the speed your hand gave it. */
+const SHIFT = { type: "spring", duration: 0.35, bounce: 0.15 };
+const DROP = { type: "spring", duration: 0.45, bounce: 0.22 };
+/** Held, the card leans a little; swung, it trails the hand. */
+const LEAN = 0.5;
+const SWING = { type: "spring", stiffness: 320, damping: 20 };
+
+/** iOS-style rubber band: gives a little, then less and less. */
+const rubber = (d, limit) => Math.sign(d) * (1 - 1 / ((Math.abs(d) * 0.55) / limit + 1)) * limit;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+const demo = defineDemo({
+  width: 424,
+  height: 520,
+  background: "#ffffff",
+  css: css`
+    :scope {
+      color: #18181b;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    :scope .head {
+      position: absolute;
+      top: 40px;
+      left: ${SIDE + 4}px;
+      right: ${SIDE + 4}px;
+      display: flex;
+      align-items: center;
+    }
+    :scope .h-title {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 650;
+      line-height: 28px;
+      letter-spacing: -0.02em;
+    }
+    :scope .h-meta {
+      margin: 2px 0 0;
+      font-size: 13px;
+      line-height: 18px;
+      color: #71717a;
+      font-variant-numeric: tabular-nums;
+    }
+    :scope .play {
+      display: grid;
+      place-items: center;
+      width: 44px;
+      height: 44px;
+      margin-left: auto;
+      border-radius: 999px;
+      background: #18181b;
+      color: #fff;
+      box-shadow:
+        inset 0 1px 0 rgb(255 255 255 / 0.14),
+        0 6px 14px -6px rgb(0 0 0 / 0.45);
+    }
+    :scope .play svg {
+      width: 19px;
+      height: 19px;
+      margin-left: 2px;
+    }
+    :scope .list {
+      position: absolute;
+      top: 102px;
+      left: ${SIDE}px;
+      right: ${SIDE}px;
+      height: ${5 * STEP - 8}px;
+    }
+    /* Where the held card will land: a recessed slot that slides from
+       place to place under it. */
+    :scope .slot {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: ${H}px;
+      box-sizing: border-box;
+      border: 1.5px dashed #d4d4d8;
+      border-radius: 18px;
+      background: #f6f6f7;
+      opacity: 0;
+      pointer-events: none;
+      will-change: transform, opacity;
+    }
+    :scope .card {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-sizing: border-box;
+      height: ${H}px;
+      padding: 0 18px 0 6px;
+      border-radius: 18px;
+      background: #fff;
+      box-shadow:
+        0 0 0 1px rgb(24 24 27 / 0.07),
+        0 1px 2px rgb(24 24 27 / 0.05);
+      cursor: grab;
+      /* A finger on the row scrolls the page; only the grip picks it up. */
+      touch-action: pan-y;
+      user-select: none;
+      -webkit-user-select: none;
+      will-change: transform;
+    }
+    :scope .card.is-held {
+      cursor: grabbing;
+    }
+    /* The lifted shadow is its own layer, faded by opacity - far cheaper
+       than animating box-shadow every frame. */
+    :scope .shade {
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      box-shadow:
+        0 22px 36px -16px rgb(24 24 27 / 0.3),
+        0 8px 16px -8px rgb(24 24 27 / 0.14);
+      opacity: 0;
+      pointer-events: none;
+    }
+    :scope .grip {
+      flex: none;
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 46px;
+      padding: 0;
+      border: 0;
+      border-radius: 10px;
+      background: transparent;
+      color: #d4d4d8;
+      cursor: inherit;
+      touch-action: none;
+      transition:
+        color 150ms ease,
+        background-color 150ms ease;
+    }
+    :scope .grip svg {
+      width: 10px;
+      height: 16px;
+    }
+    :scope .grip:focus-visible {
+      outline: 2px solid #6366f1;
+      outline-offset: -2px;
+      color: #52525b;
+    }
+    :scope .card.is-held .grip {
+      color: #52525b;
+      background: #f4f4f5;
+    }
+    /* Not while held: a real pointer is still over the card mid-drag, and
+       the lighter hover grey would win over the held state's. */
+    @media (hover: hover) and (pointer: fine) {
+      [data-demo-state="live"] :scope .card:not(.is-held):hover .grip {
+        color: #a1a1aa;
+      }
+    }
+    :scope .cover {
+      position: relative;
+      flex: none;
+      overflow: hidden;
+      width: 50px;
+      height: 50px;
+      border-radius: 12px;
+    }
+    :scope .cover svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    /* Sleeve gloss and a hairline edge, over the art. */
+    :scope .cover::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: linear-gradient(155deg, rgb(255 255 255 / 0.28), transparent 42%);
+      box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.06);
+    }
+    :scope .meta {
+      flex: 1;
+      min-width: 0;
+    }
+    :scope .t {
+      overflow: hidden;
+      font-size: 16px;
+      font-weight: 600;
+      line-height: 21px;
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    :scope .a {
+      margin-top: 2px;
+      font-size: 13.5px;
+      line-height: 18px;
+      color: #71717a;
+    }
+    :scope .time {
+      font-size: 13.5px;
+      color: #71717a;
+      font-variant-numeric: tabular-nums;
+    }
+    :scope .sr {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
+  `,
+  setup({ root, signal, cursor, wait, later, local, reduced }) {
+    const play = h("div", { class: "play", "aria-hidden": "true" });
+    play.innerHTML = PLAY;
+    const slot = h("div", { class: "slot", "aria-hidden": "true" });
+    const list = h("div", { class: "list", role: "list", "aria-label": "今晚的歌单" }, slot);
+    const live = h("div", { class: "sr", "aria-live": "assertive" });
+    root.append(
+      h(
+        "div",
+        { class: "head" },
+        h("div", {}, h("p", { class: "h-title" }, "今晚的歌单"), h("p", { class: "h-meta" }, "5 首 · 20 分钟")),
+        play,
+      ),
+      list,
+      live,
+    );
+    const say = (text) => (live.textContent = text);
+
+    const slotY = motionValue(0);
+    const slotOn = motionValue(0);
+    const paintSlot = () => {
+      slot.style.transform = `translateY(${slotY.get()}px)`;
+      slot.style.opacity = String(slotOn.get());
+    };
+    const unsubs = [slotY.on("change", paintSlot), slotOn.on("change", paintSlot)];
+
+    const cards = SONGS.map((s, id) => {
+      const grip = h("button", {
+        class: "grip",
+        type: "button",
+        // No describedby: an id would repeat when a page mounts the demo twice.
+        "aria-label": `移动《${s.title}》：空格拿起，上下方向键移动，空格放下，Esc 取消`,
+      });
+      grip.innerHTML = GRIP;
+      const cover = h("span", { class: "cover" });
+      cover.style.background = s.sky;
+      cover.innerHTML = `<svg viewBox="0 0 50 50" aria-hidden="true">${s.art}</svg>`;
+      const shade = h("span", { class: "shade" });
+      const el = h(
+        "div",
+        { class: "card", role: "listitem" },
+        shade,
+        grip,
+        cover,
+        h("div", { class: "meta" }, h("div", { class: "t" }, s.title), h("div", { class: "a" }, s.artist)),
+        h("span", { class: "time" }, s.time),
+      );
+      const card = {
+        id,
+        title: s.title,
+        el,
+        grip,
+        y: motionValue(id * STEP),
+        x: motionValue(0),
+        lift: motionValue(0),
+        tilt: motionValue(0),
+      };
+      const paint = () => {
+        const l = card.lift.get();
+        const tilt = reduced ? 0 : card.tilt.get();
+        el.style.transform = `translate3d(${card.x.get()}px, ${card.y.get()}px, 0) scale(${1 + 0.035 * l}) rotate(${tilt.toFixed(3)}deg)`;
+        shade.style.opacity = String(clamp(l, 0, 1));
+      };
+      unsubs.push(
+        card.y.on("change", paint),
+        card.x.on("change", paint),
+        card.lift.on("change", paint),
+        card.tilt.on("change", paint),
+      );
+      paint();
+      list.append(el);
+      return card;
+    });
+
+    /* order[slot] = card id. The DOM stays put while dragging - everything
+       is transforms - and is only re-sequenced once a card lands. */
+    let order = cards.map((c) => c.id);
+    let drag = null;
+    let pointerId = null;
+    const maxY = (cards.length - 1) * STEP;
+    const last = { y: 0, t: 0, vy: 0 };
+    let calm = () => {};
+
+    const settle = (spring) =>
+      order.forEach((id, i) => {
+        const c = cards[id];
+        if (drag?.card === c) return;
+        animate(c.y, i * STEP, spring);
+      });
+
+    // Move only what's out of place, so the landing card keeps its transitions.
+    const commitDom = () => {
+      const focused = document.activeElement;
+      order.forEach((id, i) => {
+        const el = cards[id].el;
+        const at = list.children[i + 1]; // the slot well is child 0
+        if (at !== el) list.insertBefore(el, at);
+      });
+      // Re-inserting a node takes focus from inside it; hand it back.
+      if (focused instanceof HTMLElement && focused !== document.activeElement && list.contains(focused)) {
+        focused.focus({ preventScroll: true });
+      }
+    };
+
+    const toSlot = (next) => {
+      if (!drag || next === drag.slot) return;
+      order.splice(order.indexOf(drag.card.id), 1);
+      order.splice(next, 0, drag.card.id);
+      drag.slot = next;
+      settle(SHIFT);
+      animate(slotY, next * STEP, SHIFT);
+    };
+
+    const begin = (card, p, keys = false) => {
+      if (drag) return;
+      card.y.stop();
+      card.x.stop();
+      const at = order.indexOf(card.id);
+      drag = { card, start: p, originY: card.y.get(), slot: at, from: [...order], keys };
+      cards.forEach((c) => (c.el.style.zIndex = c === card ? "3" : "1"));
+      card.el.classList.add("is-held");
+      // It pivots where it's held, the way a card hangs from your fingers.
+      card.el.style.transformOrigin = `${clamp(p.x - SIDE - card.x.get(), 0, 360)}px 50%`;
+      last.y = p.y;
+      last.t = performance.now();
+      last.vy = 0;
+      slotY.jump(at * STEP);
+      animate(slotOn, 1, { duration: reduced ? 0 : 0.18 });
+      animate(card.lift, 1, springs.snappy);
+      animate(card.tilt, LEAN, springs.snappy);
+    };
+
+    const move = (p) => {
+      if (!drag || drag.keys) return;
+      const { card } = drag;
+      let y = drag.originY + (p.y - drag.start.y);
+      // Past either end the card still follows, just reluctantly - and
+      // never far enough to leave the artboard.
+      if (y < 0) y = rubber(y, 40);
+      else if (y > maxY) y = maxY + rubber(y - maxY, 40);
+      card.y.set(y);
+      card.x.set(rubber(p.x - drag.start.x, 10));
+
+      /* Swing: held from the left, a card pulled down lets its free end
+         trail up, and the other way round. Smoothed speed sets the lean;
+         when the hand stops, it hangs straight again. */
+      const now = performance.now();
+      const dt = Math.max(1, now - last.t);
+      last.vy = last.vy * 0.6 + ((p.y - last.y) / dt) * 1000 * 0.4;
+      last.y = p.y;
+      last.t = now;
+      animate(card.tilt, clamp(LEAN - last.vy * 0.0045, -2, 3), SWING);
+      calm();
+      calm = later(() => {
+        last.vy = 0;
+        if (drag?.card === card) animate(card.tilt, LEAN, SWING);
+      }, 90);
+
+      toSlot(clamp(Math.round(y / STEP), 0, cards.length - 1));
+    };
+
+    const end = () => {
+      if (!drag) return;
+      const { card, slot: at, keys } = drag;
+      drag = null;
+      calm();
+      card.el.classList.remove("is-held");
+      card.el.style.zIndex = "2"; // stays above its neighbours while it lands
+      // The value was fed by .set() during the drag, so the spring inherits
+      // the release velocity instead of starting from rest.
+      animate(card.y, at * STEP, DROP);
+      animate(card.x, 0, DROP);
+      animate(card.tilt, 0, DROP);
+      /* Set down, not just released: it sinks a hair below flat and back,
+         the slot fading out from under it as it does. */
+      animate(card.lift, reduced ? 0 : [card.lift.get(), -0.3, 0], reduced ? { duration: 0 } : { duration: 0.46, times: [0, 0.5, 1], ease: [0.33, 1, 0.68, 1] });
+      animate(slotOn, 0, { duration: reduced ? 0 : 0.22 });
+      commitDom();
+      if (keys) say(`已放下，《${card.title}》现在是第 ${at + 1} 首。`);
+    };
+
+    const cancel = () => {
+      if (!drag) return;
+      const { card } = drag;
+      order = drag.from;
+      drag.slot = order.indexOf(card.id);
+      settle(SHIFT);
+      drag.keys = false; // no "dropped at" line - it never moved
+      end();
+      say(`已取消，《${card.title}》回到第 ${order.indexOf(card.id) + 1} 首。`);
+    };
+
+    for (const card of cards) {
+      card.el.addEventListener(
+        "pointerdown",
+        (e) => {
+          // A press sets down a card held by the keys - or by the walkthrough,
+          // which this very press just took over - so it can grab at once.
+          if (drag?.keys || drag?.scripted) end();
+          if (drag || pointerId !== null || e.button !== 0) return; // one finger at a time
+          if (e.pointerType !== "mouse" && !card.grip.contains(e.target)) return; // touch: grip only
+          e.preventDefault();
+          pointerId = e.pointerId;
+          card.el.setPointerCapture(e.pointerId);
+          begin(card, local(e));
+        },
+        { signal },
+      );
+      card.el.addEventListener(
+        "pointermove",
+        (e) => {
+          if (e.pointerId === pointerId) move(local(e));
+        },
+        { signal },
+      );
+      const release = (e) => {
+        if (e.pointerId !== pointerId) return;
+        pointerId = null;
+        end();
+      };
+      card.el.addEventListener("pointerup", release, { signal });
+      card.el.addEventListener("pointercancel", release, { signal });
+      card.el.addEventListener("lostpointercapture", release, { signal });
+
+      /* The same move from the keyboard: Space or Enter picks the card
+         up, ↑/↓ carry it, Space/Enter set it down, Esc puts it back. */
+      card.grip.addEventListener(
+        "keydown",
+        (e) => {
+          const held = drag?.keys && drag.card === card;
+          const at = order.indexOf(card.id);
+          let handled = true;
+          if (e.key === " " || e.key === "Enter") {
+            if (held) end();
+            else if (!drag) {
+              const box = { x: SIDE + 20, y: at * STEP + H / 2 };
+              begin(card, box, true);
+              say(`已拿起《${card.title}》，第 ${at + 1} 首，共 ${cards.length} 首。`);
+            }
+          } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+            const next = clamp(at + (e.key === "ArrowUp" ? -1 : 1), 0, cards.length - 1);
+            if (held) {
+              if (next !== at) {
+                toSlot(next);
+                animate(card.y, next * STEP, SHIFT);
+                say(`第 ${next + 1} 首`);
+              }
+            } else if (!drag) {
+              cards[order[next]].grip.focus(); // walk the list in its visual order
+            }
+          } else if (e.key === "Escape" && held) cancel();
+          else handled = false;
+          if (handled) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        },
+        { signal },
+      );
+      card.grip.addEventListener(
+        "blur",
+        () => {
+          if (drag?.keys && drag.card === card) end();
+        },
+        { signal },
+      );
+    }
+
+    const scriptDrag = async (card, to) => {
+      await cursor.move(card.grip, { offset: { x: 1, y: 3 } });
+      await wait(160);
+      await cursor.press();
+      begin(card, { x: cursor.x, y: cursor.y });
+      if (drag) drag.scripted = true;
+      const off = cursor.onMove(move);
+      try {
+        await wait(220);
+        const dy = (to - order.indexOf(card.id)) * STEP;
+        await cursor.move({ x: cursor.x + 5, y: cursor.y + dy }, { duration: 1.05 });
+        await wait(200);
+        off();
+        await cursor.release();
+      } finally {
+        off();
+        /* Also when taken over mid-carry: the scripted hand lets go where
+           it is, so the card lands in the slot under it and the list is the
+           visitor's to grab - never left hanging in the air. */
+        if (drag?.card === card && pointerId === null) end();
+      }
+    };
+
+    return {
+      async script() {
+        await wait(600);
+        const first = cards[order[0]];
+        await scriptDrag(first, 3);
+        await wait(800);
+        // …and back again, so the loop ends where it began.
+        await scriptDrag(first, 0);
+        await wait(500);
+        await cursor.move({ x: 356, y: 500 });
+        await wait(500);
+      },
+      /* Taking over sets down whatever the walkthrough was carrying, right
+         there (the kit skips reset()), so the first press hits the real list. */
+      takeover() {
+        end();
+      },
+      reset() {
+        drag = null;
+        pointerId = null;
+        calm();
+        order = cards.map((c) => c.id);
+        cards.forEach((c) => {
+          c.el.classList.remove("is-held");
+          c.el.style.zIndex = "1";
+          animate(c.x, 0, SHIFT);
+          animate(c.tilt, 0, SHIFT);
+          animate(c.lift, 0, springs.smooth);
+        });
+        animate(slotOn, 0, { duration: 0.18 });
+        settle(SHIFT);
+        commitDom();
+        live.textContent = "";
+      },
+      destroy() {
+        unsubs.forEach((fn) => fn());
+        [slotY, slotOn].forEach((v) => v.destroy());
+        cards.forEach((c) => [c.x, c.y, c.lift, c.tilt].forEach((v) => v.destroy()));
+      },
+    };
+  },
+});
+
+/* ==================================================================
+   挂载：画板按原尺寸放进 #demo，直接交给你操作，不跑演示脚本。
+   ================================================================== */
+
+{
+  const host = document.getElementById("demo");
+  // 底边裁在内容中间的 Demo（bleed）占满整个窗口：画板贴顶、向下长到窗口底边，和站点全屏试玩一样放大到 1.5 倍。
+  const bleed = demo.bleed === "bottom";
+  if (bleed) document.body.classList.add("bleed");
+  else {
+    host.style.aspectRatio = `${demo.width} / ${demo.height}`;
+    // 也按窗口高度收窄：矮窗口里整个画板缩小放下，而不是顶部被裁出窗口外。
+    host.style.maxWidth = `min(${demo.width}px, calc((100dvh - 32px) * ${demo.width} / ${demo.height}))`;
+  }
+  const background = demo.background ?? (demo.theme === "dark" ? "#111" : "#fff");
+  const controller = mountDemo(host, "drag-reorder", demo, { live: true, autoplay: false, maxScale: bleed ? 1.5 : 1, focus: true });
+  // 渐变底色已经铺满整页；画板里再画一遍会在画板边缘留下一道硬边。
+  const artboard = host.querySelector(".demo-artboard");
+  if (artboard && background.includes("gradient(")) artboard.style.background = "none";
+  // 有的 Demo 会改自己的底色（比如切到暗色），页面跟着变。
+  controller.onSurface((surface) => (document.body.style.background = surface?.color ?? background));
+}
+</script>
+</body>
+</html>

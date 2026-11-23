@@ -1,0 +1,41 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="robots" content="noindex"><link rel="stylesheet" href="/cantrip-cn-study/_astro/feed.i3oLm75g.css"><link rel="stylesheet" href="/cantrip-cn-study/_astro/DetailBody.CIetCpo6.css"><script>
+(() => {
+  const base = '/cantrip-cn-study';
+  const withBase = value => {
+    if (value instanceof URL) value = value.pathname + value.search + value.hash;
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return value;
+    if (value === base || value.startsWith(base + "/")) return value;
+    return base + (value === "/" ? "/" : value);
+  };
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    if (typeof input === "string" || input instanceof URL) {
+      const url = withBase(input);
+      const method = init?.method ?? "GET";
+      if (method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(url, init);
+    }
+    if (input instanceof Request && new URL(input.url).origin === location.origin) {
+      const url = withBase(new URL(input.url).pathname + new URL(input.url).search + new URL(input.url).hash);
+      if (input.method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(new Request(url, input), init);
+    }
+    return nativeFetch(input, init);
+  };
+  for (const method of ["pushState", "replaceState"]) {
+    const original = history[method].bind(history);
+    history[method] = (state, title, url) => original(state, title, withBase(url));
+  }
+})();
+</script></head><body><template data-detail-tpl="facts-in-the-margin" data-at="7"><div data-part="info"><div class="info" data-astro-cid-axuhkfem><div class="lead" data-astro-cid-axuhkfem><p class="labels" data-astro-cid-axuhkfem><a href="/cantrip-cn-study/?c=component" data-filter="c:component" data-astro-cid-axuhkfem>组件</a><a href="/cantrip-cn-study/?t=click" data-filter="t:click" data-astro-cid-axuhkfem>点击</a></p><h2 id="detail-title" data-astro-cid-axuhkfem>留在页边的事实</h2><p class="desc" data-astro-cid-axuhkfem>Yanis 想的是 AI 改稿怎么让人信得过：缩写时先把客套话标灰、把事实划出来，客套话直接删，事实挪到页边排着，点一下就放回原处。</p><p class="byline" data-astro-cid-axuhkfem><a href="https://x.com/dev_ya/status/2122178281319682097" target="_blank" rel="noreferrer" data-astro-cid-axuhkfem>作者：Yanis Lebzar<svg width="1em" height="1em" viewBox="0 0 256 256" data-astro-cid-axuhkfem="true" data-icon="ph:arrow-up-right-bold"><path fill="currentColor" d="M204 64v104a12 12 0 0 1-24 0V93L72.49 200.49a12 12 0 0 1-17-17L163 76H88a12 12 0 0 1 0-24h104a12 12 0 0 1 12 12"/></svg></a><span class="sep" aria-hidden="true" data-astro-cid-axuhkfem>·</span><time datetime="2026-11-17" data-astro-cid-axuhkfem>2026 年 11 月 17 日</time></p></div><div class="side" data-astro-cid-axuhkfem><div class="actions single" data-astro-cid-axuhkfem><button class="btn primary t-press" type="button" data-copy-prompt="帮我在项目里做一个「留在页边的事实」：Yanis 想的是 AI 改稿怎么让人信得过：缩写时先把客套话标灰、把事实划出来，客套话直接删，事实挪到页边排着，点一下就放回原处。
+画面：白色卡片「October update」里一段英文；选中文字弹出「Shorten」「Rephrase」「Elaborate」，缩写时填充词变灰、事实加橙色下划线，随后事实飞到右侧「Facts removed」列表，底部「56 → 30 words」。
+
+原作：https://x.com/dev_ya/status/2122178281319682097
+效果演示：https://cantrip.cn/i/facts-in-the-margin
+
+照原作的交互和动效来做，写法换成我项目现有的技术栈和样式。打不开链接就先告诉我，我把内容贴给你，不要凭标题猜。" data-gate="prompt" data-astro-cid-axuhkfem><svg width="1em" height="1em" viewBox="0 0 256 256" data-astro-cid-axuhkfem="true" data-icon="ph:copy-simple-bold"><path fill="currentColor" d="M180 64H40a12 12 0 0 0-12 12v140a12 12 0 0 0 12 12h140a12 12 0 0 0 12-12V76a12 12 0 0 0-12-12m-12 140H52V88h116Zm60-164v140a12 12 0 0 1-24 0V52H76a12 12 0 0 1 0-24h140a12 12 0 0 1 12 12"/></svg>复制提示词</button><button class="btn icon t-press" type="button" data-copy-link="/i/facts-in-the-margin" aria-label="复制链接" title="复制链接" data-astro-cid-axuhkfem><svg width="1em" height="1em" viewBox="0 0 256 256" data-astro-cid-axuhkfem="true" data-icon="ph:link-simple-bold"><path fill="currentColor" d="m87.5 151.52l64-64a12 12 0 0 1 17 17l-64 64a12 12 0 0 1-17-17m131-114a60.08 60.08 0 0 0-84.87 0l-30.12 30.09a12 12 0 0 0 17 17l30.07-30.06a36 36 0 0 1 50.93 50.92l-30.11 30.05a12 12 0 1 0 17 17l30.08-30.06a60.09 60.09 0 0 0-.03-84.91ZM135.52 171.4l-30.07 30.08a36 36 0 0 1-50.92-50.93l30.06-30.07a12 12 0 0 0-17-17l-30.04 30.1a60 60 0 0 0 84.88 84.87l30.06-30.07a12 12 0 0 0-17-17Z"/></svg></button></div><dl class="meta" data-astro-cid-axuhkfem><div data-astro-cid-axuhkfem><dt data-astro-cid-axuhkfem>英文</dt><dd lang="en" data-astro-cid-axuhkfem>Shorten with Facts in the Margin</dd></div><div data-astro-cid-axuhkfem><dt data-astro-cid-axuhkfem>风格</dt><dd data-astro-cid-axuhkfem>极简</dd></div><div data-astro-cid-axuhkfem><dt data-astro-cid-axuhkfem>色调</dt><dd data-astro-cid-axuhkfem>浅色</dd></div></dl></div><section class="notes" data-astro-cid-axuhkfem><h3 data-astro-cid-axuhkfem>设计要点</h3><div data-astro-cid-axuhkfem><p>让 AI 把一段话缩短，最不放心的是不知道它删了什么。删的如果只是「honestly」「by quite a wide margin」这种填充词，无所谓；要是把「we launched in early September」这样的事实也删了，得逐字对一遍才发现。Yanis 把这两种删法分开处理：开始缩写时，填充词先变灰，事实画上橙色下划线，人先看到 AI 是怎么分类的。</p>
+<p>接着填充词直接消失，事实不消失，而是飞到页边排成一列，标题写着「Facts removed」。哪条觉得该留，点一下它就飞回原句。角落一直显示字数（56 → 30 words），放回一条就多几个字，删多少、留多少自己掂量，最后再决定 Accept 还是 Discard，接受了也还能 Undo。</p>
+<p>这和<a href="/cantrip-cn-study/i/subagent-task-fanout">任务分发流程</a>是同一个知识点：把 AI 在背后做的事摆到台面上，人才信得过它。这是 Yanis 用 Motion 做的一次设计探索，不是哪个产品里已有的功能。</p>
+</div></section></div></div><div data-part="stage"><div class="slides" data-astro-cid-axuhkfem><figure class="slide" data-slide="0" style="--r:1;--mw:720px;--mwt:720px" data-astro-cid-axuhkfem><video class="m" src="https://cantrip.cn/x/dev_ya-682097-hd.mp4" poster="/cantrip-cn-study/x/dev_ya-682097.webp" width="720" height="720" muted loop playsinline autoplay preload="auto" data-astro-cid-kg7vladn></video></figure></div></div></template></body></html>

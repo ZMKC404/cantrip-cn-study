@@ -1,0 +1,32 @@
+<!DOCTYPE html><html lang="zh-CN" data-astro-cid-ju4pidww><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="description" content="全屏试玩：Tinder 那套滑卡，手感像捏着一张真卡：它绕你捏住的那点转，轻甩就飞；后悔了点 ↺，它从飞走的地方原路回来。"><meta name="theme-color" content="#faf8f4"><meta property="og:title" content="试玩：卡片堆滑动 — Cantrip"><meta property="og:description" content="全屏试玩：Tinder 那套滑卡，手感像捏着一张真卡：它绕你捏住的那点转，轻甩就飞；后悔了点 ↺，它从飞走的地方原路回来。"><meta property="og:type" content="website"><meta property="og:url" content="https://zmkc404.github.io/cantrip-cn-study/play/swipe-stack"><meta property="og:site_name" content="Cantrip"><meta property="og:locale" content="zh_CN"><meta property="og:locale:alternate" content="en_US"><meta property="og:image" content="https://zmkc404.github.io/cantrip-cn-study/og.png"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta property="og:image:alt" content="Cantrip — 收集好的 UI 设计以及创意"><meta name="twitter:card" content="summary_large_image"><link rel="canonical" href="/cantrip-cn-study/play/swipe-stack"><link rel="alternate" hreflang="zh" href="/cantrip-cn-study/play/swipe-stack"><link rel="alternate" hreflang="en" href="/cantrip-cn-study/en/play/swipe-stack"><link rel="alternate" hreflang="x-default" href="/cantrip-cn-study/play/swipe-stack"><link rel="icon" href="/cantrip-cn-study/favicon.ico" sizes="32x32"><link rel="icon" type="image/svg+xml" href="/cantrip-cn-study/favicon.svg"><link rel="apple-touch-icon" href="/cantrip-cn-study/apple-touch-icon.png"><title>试玩：卡片堆滑动 — Cantrip</title><link rel="stylesheet" href="/cantrip-cn-study/_astro/Layout.D26KsvYI.css"><link rel="stylesheet" href="/cantrip-cn-study/_astro/_slug_.Bz45_twC.css"><script>
+(() => {
+  const base = '/cantrip-cn-study';
+  const withBase = value => {
+    if (value instanceof URL) value = value.pathname + value.search + value.hash;
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return value;
+    if (value === base || value.startsWith(base + "/")) return value;
+    return base + (value === "/" ? "/" : value);
+  };
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    if (typeof input === "string" || input instanceof URL) {
+      const url = withBase(input);
+      const method = init?.method ?? "GET";
+      if (method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(url, init);
+    }
+    if (input instanceof Request && new URL(input.url).origin === location.origin) {
+      const url = withBase(new URL(input.url).pathname + new URL(input.url).search + new URL(input.url).hash);
+      if (input.method !== "GET" && new URL(url, location.href).pathname.startsWith(base + "/api/"))
+        return Promise.reject(new TypeError("Server APIs are not included in this static snapshot."));
+      return nativeFetch(new Request(url, input), init);
+    }
+    return nativeFetch(input, init);
+  };
+  for (const method of ["pushState", "replaceState"]) {
+    const original = history[method].bind(history);
+    history[method] = (state, title, url) => original(state, title, withBase(url));
+  }
+})();
+</script></head><body data-site-name="Cantrip" data-astro-cid-ju4pidww><div class="play" style="--bg:#f3f1ee" data-theme="light" data-astro-cid-h3hvapo6><header data-astro-cid-h3hvapo6><h1 class="sr-only" data-astro-cid-h3hvapo6>试玩：卡片堆滑动</h1><a href="/cantrip-cn-study/i/swipe-stack" class="back" data-astro-cid-h3hvapo6><svg width="1em" height="1em" viewBox="0 0 256 256" data-astro-cid-h3hvapo6="true" data-icon="ph:arrow-left-bold"><symbol id="ai:ph:arrow-left-bold"><path fill="currentColor" d="M228 128a12 12 0 0 1-12 12H69l51.52 51.51a12 12 0 0 1-17 17l-72-72a12 12 0 0 1 0-17l72-72a12 12 0 0 1 17 17L69 116h147a12 12 0 0 1 12 12"/></symbol><use href="#ai:ph:arrow-left-bold"></use></svg><span data-astro-cid-h3hvapo6>卡片堆滑动</span></a><div class="chrome" data-play-chrome data-astro-cid-h3hvapo6></div></header><main class="frame" data-play="swipe-stack" data-demo="swipe-stack" data-demo-live data-max-scale="1.5" data-artboard="360x480" style="--pw:540px;--ph:720px" data-astro-cid-h3hvapo6><img class="still" src="/cantrip-cn-study/posters/swipe-stack.webp" width="360" height="480" alt="" draggable="false" data-poster data-astro-cid-h3hvapo6></main></div><script type="module" src="/cantrip-cn-study/_astro/Layout.astro_astro_type_script_index_0_lang.7iDF_VDG.js"></script></body></html><script type="module" src="/cantrip-cn-study/_astro/_slug_.astro_astro_type_script_index_0_lang.BAiXMaqk.js"></script>

@@ -1,0 +1,1297 @@
+<!doctype html>
+<!--
+  长按删除 · Hold-to-Confirm Delete
+  Cantrip 的一条交互实现：https://cantrip.cn/i/hold-to-delete
+  参考：Emil Kowalski  https://emilkowal.ski/ui/building-a-hold-to-delete-component
+  思路来自上面这个参考；代码是 Cantrip 自己写的。
+
+  怎么用
+    · 用浏览器直接打开这个文件就能玩，不用构建。
+    · <script type="module"> 里依次是：Cantrip 的 Demo 运行时（mountDemo 等，
+      负责缩放画板、注入样式、管理事件），然后是这个 Demo 本身
+      （defineDemo({ width, height, css, setup })），最后一行把它挂到 #demo 上。
+    · 搬进自己的项目：交互都在 setup() 里，ctx.root 是画板元素；css 里的
+      :scope 会被替换成 .d-hold-to-delete。不需要演示脚本的话，script/reset 可以删掉。
+
+  依赖
+    · Motion 12.43.0（https://motion.dev），由下面的 import map 从 esm.sh 加载，需要联网。
+      也可以 npm i motion 后删掉 import map，改成本地导入：import { animate } from "motion"。
+
+  源文件：src/demos/hold-to-delete.ts 与 src/demos/_kit.ts（构建时生成）。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>长按删除 · Cantrip</title>
+<!-- 也可以 npm i motion 后删掉这段 import map，改成本地导入。 -->
+<script type="importmap">
+{ "imports": { "motion": "https://esm.sh/motion@12.43.0" } }
+</script>
+<style>
+/* 页面：画板居中，四周留白。 */
+html, body { height: 100%; }
+body {
+  margin: 0;
+  display: grid;
+  place-items: safe center;
+  padding: 16px;
+  box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+/* 画板的底边本来就裁在内容中间的 Demo（bleed）：#demo 铺满窗口，裁口落在窗口底边。 */
+body.bleed { display: block; padding: 0; }
+body.bleed #demo { height: 100vh; height: 100dvh; }
+#demo { position: relative; width: 100%; overflow: hidden; }
+
+/* 基础重置（节选自 Tailwind preflight，站点上 Demo 就是在它之上画的）。 */
+@layer reset {
+  *, ::before, ::after { box-sizing: border-box; margin: 0; padding: 0; border: 0 solid; }
+  h1, h2, h3, h4, h5, h6 { font-size: inherit; font-weight: inherit; }
+  a { color: inherit; text-decoration: inherit; }
+  ol, ul, menu { list-style: none; }
+  img, svg, video, canvas { display: block; vertical-align: middle; }
+  img, video { max-width: 100%; height: auto; }
+  button, input, select, textarea {
+    font: inherit; letter-spacing: inherit; color: inherit;
+    border-radius: 0; background-color: transparent; opacity: 1;
+  }
+  button { cursor: pointer; }
+  ::placeholder { opacity: 1; color: color-mix(in oklab, currentcolor 50%, transparent); }
+  [hidden]:where(:not([hidden="until-found"])) { display: none !important; }
+}
+
+/* 画板：固定尺寸，由运行时按容器等比缩放。 */
+.demo-artboard {
+  position: absolute;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #111;
+  text-align: left;
+  -webkit-font-smoothing: antialiased;
+}
+.demo-artboard[data-theme="dark"] { color: #f5f5f5; }
+.demo-artboard :where(button, input) { font: inherit; color: inherit; }
+.demo-artboard:not([inert]) { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.demo-artboard :where(input, textarea, [contenteditable]) { -webkit-user-select: text; user-select: text; }
+.demo-artboard[tabindex="-1"]:focus { outline: none; }
+</style>
+</head>
+<body>
+<div id="demo"></div>
+<script type="module">
+import { animate } from "motion";
+
+/* ==================================================================
+   Cantrip 的 Demo 运行时（src/demos/_kit.ts）
+   ================================================================== */
+
+/* The runtime every live demo shares.
+
+   A demo is authored once, at a fixed artboard size, and shown in two places:
+   shrunk into a feed card, where it plays a scripted walkthrough on a loop
+   with a fake cursor (the way a screen recording would), and blown up on the
+   detail stage, where the same walkthrough runs until the visitor reaches in
+   and takes over. The artboard is scaled with a transform rather than being
+   re-laid out, so a demo looks identical at 260px and at 700px. */
+
+const defineDemo = (demo) => demo;
+
+/** Tag for the `css` field - identity, it just marks the string for editors. */
+const css = String.raw;
+
+const springs = {
+  snappy: { type: "spring", duration: 0.3, bounce: 0.15 },
+  smooth: { type: "spring", duration: 0.5, bounce: 0.1 },
+  bouncy: { type: "spring", duration: 0.55, bounce: 0.35 },
+};
+
+const ease = {
+  out: [0.23, 1, 0.32, 1],
+  inOut: [0.77, 0, 0.175, 1],
+  drawer: [0.32, 0.72, 0, 1],
+};
+
+function h(
+  tag,
+  props = {},
+  ...children
+) {
+  const el = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (key === "class") el.className = value;
+    else el.setAttribute(key, value);
+  }
+  el.append(...children);
+  return el;
+}
+
+/* ------------------------------------------------------------------ */
+/* Mounting                                                            */
+/* ------------------------------------------------------------------ */
+
+const CANCELLED = Symbol("cancelled");
+const injected = new Set();
+
+function inject(id, source) {
+  if (!source || injected.has(id)) return;
+  injected.add(id);
+  const style = document.createElement("style");
+  style.dataset.demo = id;
+  style.textContent = source.replaceAll(":scope", `.d-${id}`);
+  document.head.append(style);
+}
+
+const CURSOR_SVG = `<svg viewBox="0 0 20 24" width="20" height="24" aria-hidden="true"><path d="M2.2 1.6v17.6l4.5-4.2 3 6.6 3.1-1.4-3-6.4h6.3z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+
+function mountDemo(
+  frame,
+  id,
+  demo,
+  { live = false, maxScale = Infinity, focus = false, autoplay = true } = {},
+) {
+  inject(id, demo.css);
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // A phone has no arrow: there the walkthrough is drawn as a fingertip.
+  const touch = matchMedia("(hover: none) and (pointer: coarse)").matches;
+  const mount = new AbortController();
+  const listeners = new Set();
+
+  const root = document.createElement("div");
+  root.className = `demo-artboard d-${id}`;
+  root.dataset.theme = demo.theme ?? "light";
+  root.style.width = `${demo.width}px`;
+  root.style.height = `${demo.height}px`;
+  if (demo.background) root.style.background = demo.background;
+  if (!live) root.inert = true;
+  frame.append(root);
+
+  /* A walkthrough presses its buttons with .click(): those clicks are the
+     demo's business only. Bubbling on, one reached the feed card around a
+     demo and opened its detail by itself. The demo's own listeners - on the
+     artboard or anything inside it - have all run by the time this does. */
+  for (const type of ["click", "dblclick", "pointerdown", "pointerup", "mousedown", "mouseup", "keydown", "keyup", "input", "change"]) {
+    root.addEventListener(type, (e) => e.isTrusted || e.stopPropagation(), { signal: mount.signal });
+  }
+
+  let scale = 1;
+
+  /* ---- pause plumbing: timers and animations all hang off this ---- */
+  let paused = false;
+  let frozen = [];
+  const onPause = new Set();
+  const onResume = new Set();
+
+  let script = new AbortController();
+
+  const cancelled = () => Object.assign(new Error("cancelled"), { [CANCELLED]: true });
+
+  /* A timeout whose countdown stops while the demo is paused. It belongs to
+     the mount, not to a script run - only unmount or `cancel` clears it. */
+  const later = (fn, ms) => {
+    if (mount.signal.aborted) return () => {};
+    let remaining = ms;
+    let started = 0;
+    let timer = 0;
+    const run = () => {
+      started = performance.now();
+      timer = window.setTimeout(fire, remaining);
+    };
+    const halt = () => {
+      clearTimeout(timer);
+      remaining -= performance.now() - started;
+    };
+    const cancel = () => {
+      clearTimeout(timer);
+      onPause.delete(halt);
+      onResume.delete(run);
+      mount.signal.removeEventListener("abort", cancel);
+    };
+    const fire = () => {
+      cancel();
+      fn();
+    };
+    onPause.add(halt);
+    onResume.add(run);
+    mount.signal.addEventListener("abort", cancel);
+    if (!paused) run();
+    return cancel;
+  };
+
+  const wait = (ms) =>
+    new Promise((resolve, reject) => {
+      const signal = script.signal;
+      if (signal.aborted) return reject(cancelled());
+      const abort = () => {
+        cancel();
+        reject(cancelled());
+      };
+      const cancel = later(() => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      }, ms);
+      signal.addEventListener("abort", abort);
+    });
+
+  /** Runs a numeric tween that honours pause and script cancellation. */
+  const tween = (duration, ease, onUpdate) =>
+    new Promise((resolve, reject) => {
+      const signal = script.signal;
+      if (signal.aborted) return reject(cancelled());
+      /* Reduced motion jumps straight to the end. Motion would defer even a
+         zero-length tween's one update to the next frame, after `finished`
+         has settled - so land it here, or a move resolves short of its
+         target and its onMove listeners never hear where it ended. */
+      if (reduced) {
+        onUpdate(1);
+        return resolve();
+      }
+      const controls = animate(0, 1, {
+        duration,
+        ease: ease,
+        onUpdate,
+      });
+      const halt = () => controls.pause();
+      const run = () => controls.play();
+      const abort = () => {
+        controls.stop();
+        cleanup();
+        reject(cancelled());
+      };
+      const cleanup = () => {
+        onPause.delete(halt);
+        onResume.delete(run);
+        signal.removeEventListener("abort", abort);
+      };
+      onPause.add(halt);
+      onResume.add(run);
+      signal.addEventListener("abort", abort);
+      if (paused) controls.pause();
+      controls.finished.then(() => {
+        cleanup();
+        resolve();
+      });
+    });
+
+  const local = (e) => {
+    const r = root.getBoundingClientRect();
+    return {
+      // Layout size, not demo.width/height: a bleed artboard grows taller.
+      x: (e.clientX - r.left) / (r.width / root.offsetWidth || 1),
+      y: (e.clientY - r.top) / (r.height / root.offsetHeight || 1),
+    };
+  };
+
+  const center = (el) => {
+    const r = el.getBoundingClientRect();
+    return local({ clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 });
+  };
+
+  /* ---- the fake cursor ---- */
+  const pointer = document.createElement("div");
+  pointer.className = touch ? "demo-cursor is-touch" : "demo-cursor";
+  if (!touch) pointer.innerHTML = CURSOR_SVG;
+  if (autoplay) root.append(pointer);
+
+  const pos = { x: demo.width * 0.72, y: demo.height * 0.82 };
+  let pressed = false;
+  const moveListeners = new Set();
+  // Where the hotspot sits inside the drawing: the arrow's tip, the dot's centre.
+  const tip = touch ? { x: 11, y: 11 } : { x: 2, y: 1.5 };
+  const place = () => {
+    /* In a card the cursor scales with the picture, like a screen recording
+       (and so does the poster still, shot at 2× a card). Blown up on a
+       stage it stays the size of a real one. */
+    const k = (pressed ? (touch ? 0.8 : 0.86) : 1) / (live ? Math.max(1, scale) : 1);
+    pointer.style.transform = `translate(${pos.x - tip.x}px, ${pos.y - tip.y}px) scale(${k})`;
+    pointer.classList.toggle("is-pressed", pressed);
+  };
+  const paint = () => {
+    place();
+    moveListeners.forEach((fn) => fn({ x: pos.x, y: pos.y }));
+  };
+
+  /* Contain-fit the artboard into whatever box it was given, up to
+     `maxScale`: centred, or for a `bleed` demo pinned to the top and grown
+     down to the box's floor (see `Demo.bleed`).
+     Layout size is what the observer sees, so a FLIP transform on an
+     ancestor doesn't make the demo re-scale mid-flight.
+     Its edges land on whole device pixels. Between two, the artboard's own
+     background and a layer drawn over it are each smoothed on their own,
+     and the first showed through as a hairline - a light line along a dark
+     window. So the box is snapped: its size by a hair of non-uniform
+     scale, its corner by a sub-pixel nudge measured against the frame. */
+  const hang = demo.bleed === "bottom";
+  root.style.left = root.style.top = "0";
+  root.style.transformOrigin = "0 0";
+  const fit = () => {
+    const w = frame.clientWidth;
+    const hgt = frame.clientHeight;
+    if (!w || !hgt) return;
+    scale = Math.min(w / demo.width, hgt / demo.height, maxScale * (demo.stretch ?? 1));
+    const dpr = devicePixelRatio || 1;
+    const snap = (v) => Math.round(v * dpr) / dpr;
+    const bw = snap(demo.width * scale);
+    const bh = snap(demo.height * scale);
+    // Where the frame's padding box starts on screen, so the nudge lands the corner on the grid.
+    const r = frame.getBoundingClientRect();
+    const ox = r.left + frame.clientLeft;
+    const oy = r.top + frame.clientTop;
+    const x = snap(ox + (w - bw) / 2) - ox;
+    const sy = bh / demo.height;
+    const rest = hgt - (demo.reach ?? Infinity) * sy;
+    const y = hang ? (rest > 0 ? snap(oy + rest / 2) - oy : 0) : snap(oy + (hgt - bh) / 2) - oy;
+    // Grown in whole artboard px past the box's floor; the frame clips the rest.
+    if (hang) root.style.height = `${Math.max(demo.height, Math.ceil((hgt - y) / sy))}px`;
+    root.style.transform = `translate(${x}px, ${y}px) scale(${bw / demo.width}, ${sy})`;
+    place();
+  };
+  const ro = new ResizeObserver(fit);
+  ro.observe(frame);
+  fit();
+
+  /* ---- surface: the colour the page around the artboard should be ---- */
+  let surface = null;
+  const surfaceListeners = new Set();
+  const frameBg = frame.style.backgroundColor;
+  const setSurface = (color, tone) => {
+    const next = color ? { color, tone: tone ?? demo.theme ?? "light" } : null;
+    if (next?.color === surface?.color && next?.tone === surface?.tone) return;
+    surface = next;
+    // The frame's own letterbox follows too, wherever it's mounted.
+    frame.style.backgroundColor = next ? next.color : frameBg;
+    surfaceListeners.forEach((fn) => fn(next));
+  };
+  const resolve = (t) => ("x" in t ? t : center(t));
+
+  const cursor = {
+    get x() {
+      return pos.x;
+    },
+    get y() {
+      return pos.y;
+    },
+    show(at) {
+      if (at) Object.assign(pos, resolve(at));
+      paint();
+      pointer.classList.add("is-visible");
+    },
+    hide() {
+      pointer.classList.remove("is-visible");
+    },
+    async move(to, opts = {}) {
+      const target = resolve(to);
+      const end = { x: target.x + (opts.offset?.x ?? 0), y: target.y + (opts.offset?.y ?? 0) };
+      const start = { ...pos };
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 0.5) return;
+      /* A hand doesn't travel in a ruler-straight line - bow the path a
+         little to one side, proportional to the distance covered. */
+      const bow = dist * 0.12;
+      const ctrl = {
+        x: start.x + dx / 2 - (dy / dist) * bow,
+        y: start.y + dy / 2 + (dx / dist) * bow,
+      };
+      const duration = opts.duration ?? Math.min(0.95, Math.max(0.38, dist / 700));
+      pointer.classList.add("is-visible");
+      await tween(duration, [0.45, 0, 0.2, 1], (t) => {
+        const u = 1 - t;
+        pos.x = u * u * start.x + 2 * u * t * ctrl.x + t * t * end.x;
+        pos.y = u * u * start.y + 2 * u * t * ctrl.y + t * t * end.y;
+        paint();
+      });
+    },
+    async press() {
+      pressed = true;
+      paint();
+      await wait(90);
+    },
+    async release() {
+      pressed = false;
+      paint();
+      await wait(60);
+    },
+    async click(fn) {
+      await cursor.press();
+      fn?.();
+      await cursor.release();
+    },
+    onMove(fn) {
+      moveListeners.add(fn);
+      return () => moveListeners.delete(fn);
+    },
+  };
+
+  const frameLoops = new Set();
+  let rafId = 0;
+  let last = 0;
+  const tick = (t) => {
+    const dt = Math.min(64, t - (last || t));
+    last = t;
+    frameLoops.forEach((fn) => fn(dt, t));
+    rafId = requestAnimationFrame(tick);
+  };
+  const startFrames = () => {
+    if (!rafId && frameLoops.size && !paused) {
+      last = 0;
+      rafId = requestAnimationFrame(tick);
+    }
+  };
+  const stopFrames = () => {
+    cancelAnimationFrame(rafId);
+    rafId = 0;
+  };
+  onPause.add(stopFrames);
+  onResume.add(startFrames);
+
+  const ctx = {
+    root,
+    live,
+    reduced,
+    signal: mount.signal,
+    wait,
+    later,
+    cursor,
+    local,
+    center,
+    frame(fn) {
+      frameLoops.add(fn);
+      startFrames();
+    },
+    setSurface,
+  };
+
+  const instance = demo.setup(ctx) ?? {};
+  if (autoplay) root.append(pointer); // keep the cursor above whatever setup built
+
+  /* Focusable by script and by a click on its bare surface, but no extra
+     tab stop - unless the demo made it one itself. */
+  if (live && focus) {
+    if (!root.hasAttribute("tabindex")) root.tabIndex = -1;
+    root.focus({ preventScroll: true, focusVisible: false });
+  }
+
+  /* While the walkthrough plays, the demo's live regions - a transcript, a
+     message's status, a reader's caption - would read the fake visitor's
+     every step aloud. They're silenced for the script and given back the
+     moment the demo is the visitor's. */
+  const hushed = new Map();
+  const hush = (on) => {
+    if (on) {
+      root.querySelectorAll("[aria-live], [role=status], [role=log], [role=alert], [role=timer], [role=marquee]").forEach((el) => {
+        if (hushed.has(el)) return;
+        hushed.set(el, el.getAttribute("aria-live"));
+        el.setAttribute("aria-live", "off");
+      });
+    } else {
+      hushed.forEach((was, el) => (was === null ? el.removeAttribute("aria-live") : el.setAttribute("aria-live", was)));
+      hushed.clear();
+    }
+  };
+
+  /* ---- script loop ---- */
+  let state = "idle";
+  const setState = (next) => {
+    state = next;
+    frame.dataset.demoState = next;
+    if (live) hush(next === "script");
+    listeners.forEach((fn) => fn(next));
+  };
+
+  /* wait()/tween() read the *current* controller when called, so a new run
+     must not start until the old one has actually left its script - or a
+     pass still awaiting something outside the kit would pick up the new
+     signal and keep running alongside it. */
+  let running = Promise.resolve();
+  let pendingReplay = null;
+  let destroyed = false;
+
+  /* How far a real mouse has hovered since this run started - see the
+     takeover below. */
+  let travelled = 0;
+  let prev = null;
+  /* Whether hovering may take over at all. A replay is asked for with the
+     mouse, which then moves off the button it pressed: that isn't reaching
+     in. Hover waits until the mouse has rested a second, or has left the
+     stage and come back. */
+  let armed = true;
+  let disarm = () => {};
+
+  const loop = () => (running = run());
+
+  const run = async () => {
+    if (!instance.script) return;
+    script = new AbortController();
+    const signal = script.signal;
+    /* Every run, a replay included, gets the full hover grace again. Left
+       over, the travel that took the last one over would end this one on
+       the first nudge, and a stale `prev` would add one big jump. */
+    travelled = 0;
+    prev = null;
+    setState("script");
+    cursor.show();
+    while (!signal.aborted) {
+      try {
+        await instance.script(ctx);
+        await wait(200);
+      } catch (error) {
+        if ((error)?.[CANCELLED] || signal.aborted) break;
+        console.error(`[demo:${id}]`, error);
+        break;
+      }
+      if (!signal.aborted) instance.reset?.();
+    }
+  };
+
+  const stopScript = () => {
+    script.abort();
+    pressed = false;
+    cursor.hide();
+  };
+
+  const replay = () => {
+    stopScript();
+    instance.reset?.();
+    disarm();
+    // Wait for the cancelled pass to unwind (bounded, in case it's stuck).
+    // Only the latest request starts a run, however fast it's pressed.
+    const token = (pendingReplay = {});
+    Promise.race([running, new Promise((r) => setTimeout(r, 1000))]).then(() => {
+      if (!destroyed && pendingReplay === token) {
+        pendingReplay = null;
+        loop();
+      }
+    });
+  };
+
+  /* On stage the walkthrough runs until the visitor reaches in. A stray
+     mouse already resting over the stage when it opens shouldn't count, so
+     hovering has to travel a little before it's a takeover; a press, a key
+     or Tabbing onto a control always is.
+     What they reach for is what they saw. A press, a touch, the wheel or a
+     key stops the script and lets go of its fake press, and everything else
+     stays as it is: the switch the walkthrough left on is still on, so the
+     first tap turns it off. A mouse that merely wandered in has aimed at
+     nothing, and gets the demo back at rest. */
+  if (live) {
+    /* A press is hit-tested against the picture from before the takeover.
+       If the takeover moved things - a reset, or a demo's own hook - a press
+       on a thing keeps it, even if it moved: that's what the visitor aimed
+       at. A press on empty space, or on something taken away, goes to
+       whatever is under the pointer now: the row that sprang back into the
+       gap it was pressed in. */
+    const retarget = (e) => {
+      const was = e.target;
+      const hit = document.elementFromPoint(e.clientX, e.clientY);
+      if (!hit || hit === was || !root.contains(hit)) return;
+      if (root.contains(was) && !was.contains(hit)) return;
+      e.stopImmediatePropagation();
+      hit.dispatchEvent(new PointerEvent(e.type, e));
+    };
+    /* A touch is hit-tested once, before its pointerover - which is already
+       the takeover - so its pointerdown still carries the old target. */
+    let stale = null;
+    /* A thumb that lands on the stage on its way to scrolling the page is no
+       visitor reaching in: the browser claims the gesture for panning and
+       cancels the pointer. A cancel that soon after a touch takeover, with
+       nothing else in between, gives the walkthrough back. */
+    let touched = null;
+    const takeover = (how, e) => {
+      if (state !== "script") return;
+      touched = e instanceof PointerEvent && e.pointerType !== "mouse" ? { id: e.pointerId, at: e.timeStamp } : null;
+      stopScript();
+      /* The walkthrough's pressed look goes with its hand. A real press puts
+         its own back on: the demo's handlers see this event after this. */
+      root.querySelectorAll(".is-pressed").forEach((el) => el.classList.remove("is-pressed"));
+      let moved = true;
+      if (instance.takeover) instance.takeover(how);
+      else if (how === "hover") instance.reset?.();
+      else moved = false;
+      setState("live");
+      if (moved && e instanceof PointerEvent && (e.type === "pointerdown" || e.pointerType !== "mouse")) stale = e.pointerId;
+    };
+    const capture = { signal: mount.signal, capture: true };
+    frame.addEventListener(
+      "pointerdown",
+      (e) => {
+        takeover("press", e);
+        if (stale !== e.pointerId) return;
+        stale = null;
+        retarget(e);
+      },
+      capture,
+    );
+    frame.addEventListener(
+      "pointercancel",
+      (e) => {
+        const t = touched;
+        touched = null;
+        if (t && t.id === e.pointerId && e.timeStamp - t.at < 400 && state === "live") replay();
+      },
+      capture,
+    );
+    // A lift, or anything else the visitor does, makes the takeover theirs for good.
+    frame.addEventListener("pointerup", () => (touched = null), capture);
+    frame.addEventListener("keydown", () => (touched = null), capture);
+    // Tab only passes through: arriving on a control is the focusin below.
+    frame.addEventListener("keydown", (e) => e.key !== "Tab" && takeover("press"), capture);
+    // Scrolling inside the stage is reaching in too - don't fight a wheel.
+    frame.addEventListener("wheel", (e) => takeover("press", e), { ...capture, passive: true });
+
+    /* A keyboard reaches in by Tabbing onto a control - its keydown fired
+       outside, so only the focus arrives here. That includes the artboard
+       itself, for a demo that made it the tab stop. A script focusing its
+       own field is no visitor, though, nor is a page focusing the artboard
+       so keys reach it: only focus that lands on the heels of a Tab counts. */
+    let tabbed = -Infinity;
+    document.addEventListener("keydown", (e) => e.key === "Tab" && (tabbed = e.timeStamp), capture);
+    frame.addEventListener("focusin", (e) => e.timeStamp - tabbed < 150 && takeover("press"), capture);
+
+    /* After a replay, hover is held off until the mouse rests for a second
+       (any move, anywhere, restarts the count) or leaves the stage. */
+    let rest = 0;
+    const settle = () => {
+      clearTimeout(rest);
+      rest = window.setTimeout(() => (armed = true), 1000);
+    };
+    disarm = () => {
+      armed = false;
+      settle();
+    };
+    document.addEventListener("pointermove", (e) => !armed && e.pointerType === "mouse" && settle(), capture);
+    mount.signal.addEventListener("abort", () => clearTimeout(rest));
+
+    /* Until then the script owns the demo, so real hover input is stopped
+       here on its way down and the demo's own handlers never fight the fake
+       cursor. Whatever tips it into a takeover is let through: the demo has
+       run reset() (or its takeover()) by the time it sees that event. */
+    for (const type of ["pointermove", "pointerover", "pointerout", "pointerenter", "pointerleave"]) {
+      frame.addEventListener(
+        type,
+        (e) => {
+          /* Leaving the stage breaks the trail - coming back in elsewhere
+             isn't travel. Reset here rather than in a bubble listener, which
+             the stopPropagation below would skip even on the frame itself. */
+          if (type === "pointerleave" && e.target === frame) {
+            prev = null;
+            armed = true;
+          }
+          if (state !== "script") return;
+          /* Touch and pen only hover the stage on their way to reaching in. Their
+             leaving is no reach - it's the tail of a touch the page took for a
+             scroll, arriving just after the walkthrough was given back. */
+          if (e.pointerType !== "mouse") {
+            if (type !== "pointerout" && type !== "pointerleave") return takeover("press", e);
+          }
+          // Held off, the trail starts over from wherever the mouse is once it isn't.
+          else if (type === "pointermove" && !armed) prev = null;
+          else if (type === "pointermove") {
+            const p = { x: e.clientX, y: e.clientY };
+            if (prev) travelled += Math.hypot(p.x - prev.x, p.y - prev.y);
+            prev = p;
+            if (travelled > 90) return takeover("hover", e);
+          }
+          e.stopPropagation();
+        },
+        capture,
+      );
+    }
+    // Compatibility mouse events trail their pointer twins, which have already
+    // decided on any takeover - while the script still owns it, they just stop.
+    for (const type of ["mousemove", "mouseover", "mouseout", "mouseenter", "mouseleave"]) {
+      frame.addEventListener(type, (e) => state === "script" && e.stopPropagation(), capture);
+    }
+  }
+
+  if (autoplay && !reduced) loop();
+  else setState(live ? "live" : "idle");
+
+  return {
+    get state() {
+      return state;
+    },
+    pause() {
+      if (paused) return;
+      paused = true;
+      root.classList.add("is-paused");
+      onPause.forEach((fn) => fn());
+      /* Freeze whatever is mid-flight too - WAAPI, CSS transitions, Motion's
+         accelerated tweens. Only running ones, so resume never replays a
+         finished animation. */
+      frozen = root.getAnimations({ subtree: true }).filter((a) => a.playState === "running");
+      frozen.forEach((a) => a.pause());
+    },
+    resume() {
+      if (!paused) return;
+      paused = false;
+      root.classList.remove("is-paused");
+      frozen.forEach((a) => a.playState === "paused" && a.play());
+      frozen = [];
+      onResume.forEach((fn) => fn());
+    },
+    replay,
+    destroy() {
+      destroyed = true;
+      stopScript();
+      mount.abort();
+      stopFrames();
+      frameLoops.clear();
+      ro.disconnect();
+      instance.destroy?.();
+      root.remove();
+    },
+    onState(fn) {
+      listeners.add(fn);
+    },
+    onSurface(fn) {
+      surfaceListeners.add(fn);
+      fn(surface);
+    },
+  };
+}
+
+/* ==================================================================
+   Demo：hold-to-delete（src/demos/hold-to-delete.ts）
+   ================================================================== */
+
+/* Long enough to be deliberate, short enough not to feel like a chore. */
+const HOLD = 1600;
+const RESTORE = 1500;
+const W_IDLE = 184;
+const W_DONE = 136;
+
+const TRASH = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v5.5M14 11v5.5"/><path d="M6 7l.9 11.2A2 2 0 0 0 8.9 20h6.2a2 2 0 0 0 2-1.8L18 7"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
+const CHECK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="tick" pathLength="1" d="M5 12.5l4.5 4.5L19 7.5"/></svg>`;
+
+const demo = defineDemo({
+  width: 400,
+  height: 300,
+  background: "#f5f5f4",
+  css: css`
+    :scope {
+      display: grid;
+      place-items: center;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    :scope .stack {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    :scope .btn {
+      position: relative;
+      width: ${W_IDLE}px;
+      height: 56px;
+      margin-top: 26px;
+      padding: 0;
+      border: 0;
+      border-radius: 999px;
+      background: #fff;
+      color: #e5484d;
+      font: inherit;
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      box-shadow:
+        0 0 0 1px rgb(28 25 23 / 0.07),
+        0 1px 0 #fff inset,
+        0 1px 2px rgb(28 25 23 / 0.06),
+        0 12px 28px -12px rgb(28 25 23 / 0.28);
+      cursor: pointer;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+      transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    :scope .btn:focus-visible {
+      outline: 2px solid oklch(0.62 0.19 255);
+      outline-offset: 2px;
+    }
+    :scope .face {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+    :scope .face svg {
+      flex: none;
+      width: 18px;
+      height: 18px;
+    }
+
+    /* The fill is the same label again, in white on red, clipped from the
+       right. Because both copies sit in the exact same spot, the wipe is a
+       perfect per-pixel colour change - no colour tween could do this. */
+    :scope .fill {
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      color: #fff;
+      background-color: #e5484d;
+      background-image: linear-gradient(180deg, rgb(255 255 255 / 0.14), rgb(255 255 255 / 0) 60%);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22), inset 0 -1px 0 rgb(0 0 0 / 0.08);
+      /* The leading edge is rounded like the pill itself, so the red reads
+         as a capsule sliding in rather than a hard bar being dragged. */
+      clip-path: inset(0 100% 0 0 round 28px);
+      transition:
+        clip-path 200ms cubic-bezier(0.23, 1, 0.32, 1),
+        background-color 260ms ease;
+    }
+    :scope .fill .face {
+      transition:
+        opacity 200ms ease,
+        filter 200ms ease,
+        transform 260ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    :scope .fill .face > [data-t]::after {
+      content: attr(data-t);
+    }
+    :scope .fill .done {
+      opacity: 0;
+      filter: blur(4px);
+      transform: translateY(6px) scale(0.96);
+    }
+    :scope .tick {
+      stroke-dasharray: 1;
+      stroke-dashoffset: 1;
+      transition: stroke-dashoffset 340ms cubic-bezier(0.23, 1, 0.32, 1) 90ms;
+    }
+
+    /* holding: slow and linear while the user decides */
+    :scope [data-state="holding"] .btn {
+      transform: scale(0.97);
+    }
+    :scope [data-state="holding"] .fill,
+    :scope [data-state="done"] .fill,
+    :scope [data-state="restoring"] .fill {
+      clip-path: inset(0 0 0 0 round 28px);
+    }
+    :scope [data-state="holding"] .fill {
+      transition:
+        clip-path ${HOLD}ms linear,
+        background-color 260ms ease;
+    }
+
+    /* done: pop back up, go quiet, swap the copy */
+    :scope [data-state="done"] .btn {
+      transition: transform 420ms cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    :scope [data-state="done"] .fill,
+    :scope [data-state="restoring"] .fill {
+      background-color: #1c1917;
+    }
+    :scope [data-state="done"] .fill .hold,
+    :scope [data-state="restoring"] .fill .hold {
+      opacity: 0;
+      filter: blur(4px);
+      transform: translateY(-6px) scale(0.96);
+    }
+    :scope [data-state="done"] .fill .done,
+    :scope [data-state="restoring"] .fill .done {
+      opacity: 1;
+      filter: none;
+      transform: none;
+    }
+    :scope [data-state="done"] .tick,
+    :scope [data-state="restoring"] .tick {
+      stroke-dashoffset: 0;
+    }
+
+    /* restoring: the dark pill dissolves in place while the width springs
+       back, so the way home never passes through a full red bar. */
+    :scope [data-state="restoring"] .fill {
+      opacity: 0;
+      transition: opacity 320ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+
+    /* ---- the thing being deleted ---- */
+    :scope .file {
+      position: relative;
+      width: 264px;
+      height: 68px;
+      border-radius: 16px;
+      background: #fff;
+      box-shadow:
+        0 0 0 1px rgb(28 25 23 / 0.06),
+        0 1px 2px rgb(28 25 23 / 0.05),
+        0 10px 24px -14px rgb(28 25 23 / 0.22);
+      transition:
+        background-color 280ms ease,
+        box-shadow 280ms ease;
+    }
+    :scope .file::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border: 1.5px dashed #d6d3d1;
+      border-radius: inherit;
+      opacity: 0;
+      transition: opacity 280ms ease;
+    }
+    :scope .row {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 14px;
+      transition:
+        opacity 200ms ease,
+        filter 200ms ease,
+        transform 280ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    :scope .thumb {
+      flex: none;
+      position: relative;
+      width: 42px;
+      height: 42px;
+      border-radius: 11px;
+      background: linear-gradient(150deg, #ffd8c4 0%, #ffab8a 100%);
+      box-shadow: inset 0 0 0 1px rgb(120 40 10 / 0.08);
+      overflow: hidden;
+    }
+    /* a tiny page inside the thumbnail: a nav bar, a hero block, two lines */
+    :scope .thumb i {
+      position: absolute;
+      left: 8px;
+      top: 9px;
+      width: 30px;
+      height: 36px;
+      border-radius: 4px 4px 0 0;
+      background:
+        linear-gradient(#ff7a50, #ff7a50) 4px 5px / 9px 3px no-repeat,
+        linear-gradient(#ffe2d4, #ffe2d4) 4px 12px / 22px 9px no-repeat,
+        linear-gradient(#e7e5e4, #e7e5e4) 4px 25px / 18px 2.5px no-repeat,
+        linear-gradient(#e7e5e4, #e7e5e4) 4px 30px / 12px 2.5px no-repeat,
+        #fff;
+      box-shadow: 0 2px 6px rgb(120 40 10 / 0.18);
+    }
+    :scope .meta {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      min-width: 0;
+    }
+    :scope .meta b {
+      font-size: 15px;
+      font-weight: 600;
+      line-height: 20px;
+      color: #1c1917;
+    }
+    :scope .meta small {
+      font-size: 13px;
+      line-height: 16px;
+      color: #6f6a65;
+      font-variant-numeric: tabular-nums;
+    }
+    :scope .gone {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      font-size: 14px;
+      font-weight: 500;
+      color: #6f6a65;
+      opacity: 0;
+      filter: blur(4px);
+      transform: scale(1.04);
+      transition:
+        opacity 220ms ease,
+        filter 220ms ease,
+        transform 300ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    :scope .gone svg {
+      width: 16px;
+      height: 16px;
+    }
+    /* While held, the file slowly lets go - on the same linear clock as
+       the fill - and springs straight back if you do. */
+    :scope [data-state="holding"] .row {
+      opacity: 0.5;
+      filter: saturate(0.2);
+      transform: scale(0.975);
+      transition:
+        opacity ${HOLD}ms linear,
+        filter ${HOLD}ms linear,
+        transform ${HOLD}ms linear;
+    }
+    :scope [data-state="done"] .file {
+      background-color: rgb(255 255 255 / 0);
+      box-shadow: 0 0 0 0 rgb(28 25 23 / 0);
+    }
+    :scope [data-state="done"] .file::before {
+      opacity: 1;
+    }
+    :scope [data-state="done"] .row {
+      opacity: 0;
+      filter: blur(6px) saturate(0.2);
+      transform: scale(0.94);
+    }
+    :scope [data-state="done"] .gone {
+      opacity: 1;
+      filter: none;
+      transform: none;
+    }
+
+    :scope .hint {
+      position: relative;
+      width: 260px;
+      height: 20px;
+      margin: 14px 0 0;
+      font-size: 14px;
+      line-height: 20px;
+      color: #6f6a65;
+      text-align: center;
+    }
+    :scope .hint span {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      filter: blur(3px);
+      transform: translateY(4px);
+      transition:
+        opacity 180ms ease,
+        filter 180ms ease,
+        transform 240ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    :scope .hint .h-hold {
+      color: #57534e;
+    }
+    :scope [data-state="idle"] .h-idle,
+    :scope [data-state="restoring"] .h-idle,
+    :scope [data-state="holding"] .h-hold,
+    :scope [data-state="done"] .h-done {
+      opacity: 1;
+      filter: none;
+      transform: none;
+    }
+  `,
+  setup({ root, signal, cursor, wait, later }) {
+    /* The fill's copies draw their words from CSS, so the button's only text
+       is the label it's named by (WCAG 2.5.3). */
+    const face = (cls, icon, text, drawn = false) => {
+      const el = h("span", { class: `face ${cls}` }, drawn ? h("span", { "data-t": text }) : h("span", {}, text));
+      el.insertAdjacentHTML("afterbegin", icon);
+      return el;
+    };
+    const fill = h(
+      "span",
+      { class: "fill", "aria-hidden": "true" },
+      face("hold", TRASH, "按住删除", true),
+      face("done", CHECK, "已删除", true),
+    );
+    const btn = h(
+      "button",
+      { class: "btn", type: "button", "aria-label": "按住删除" },
+      face("base", TRASH, "按住删除"),
+      fill,
+    );
+    const hint = h(
+      "p",
+      { class: "hint" },
+      h("span", { class: "h-idle" }, "按住以确认删除"),
+      h("span", { class: "h-hold" }, "松开取消"),
+      h("span", { class: "h-done" }, "30 天内可在回收站找回"),
+    );
+    const gone = h("span", { class: "gone" }, "已移入回收站");
+    gone.insertAdjacentHTML("afterbegin", TRASH);
+    const file = h(
+      "div",
+      { class: "file" },
+      h(
+        "span",
+        { class: "row" },
+        h("span", { class: "thumb", "aria-hidden": "true" }, h("i")),
+        h("span", { class: "meta" }, h("b", {}, "首页改版 v3"), h("small", {}, "设计稿 · 24.6 MB")),
+      ),
+      gone,
+    );
+    const stack = h("div", { class: "stack", "data-state": "idle" }, file, btn, hint);
+    root.append(stack);
+
+    let state = "idle";
+    /* The fill is a CSS transition, and the kit freezes those while the demo
+       is paused - so the timers that end each phase run on its pause-aware
+       clock too, or a card paused mid-hold would delete and restore itself
+       off-screen and come back out of step with its own fill. */
+    const noop = () => {};
+    let cancelFill = noop;
+    let cancelRestore = noop;
+    let cancelSettle = noop;
+    let widthAnim = null;
+
+    const set = (next) => {
+      state = next;
+      stack.dataset.state = next;
+    };
+    /* Back to an empty red fill without animating there: it's invisible on
+       the way out of "restoring", and every hold has to start from empty. */
+    const settle = () => {
+      fill.style.transition = "none";
+      set("idle");
+      void fill.offsetWidth; // commit the empty fill before transitions return
+      fill.style.transition = "";
+    };
+    const widthTo = (w) => {
+      widthAnim?.stop();
+      widthAnim = animate(btn, { width: w }, { type: "spring", duration: 0.5, bounce: 0.22 });
+    };
+
+    const complete = () => {
+      set("done");
+      btn.setAttribute("aria-label", "已删除");
+      widthTo(W_DONE);
+      cancelRestore = later(restore, RESTORE);
+    };
+
+    const restore = () => {
+      cancelRestore();
+      cancelSettle();
+      set("restoring");
+      btn.setAttribute("aria-label", "按住删除");
+      widthTo(W_IDLE);
+      cancelSettle = later(() => {
+        if (state === "restoring") settle();
+      }, 420);
+    };
+
+    const start = () => {
+      if (state !== "idle" && state !== "restoring") return;
+      cancelSettle();
+      /* Mid-restore the fill is still full, and going straight to "holding"
+         would read as done while the timer has barely started. */
+      if (state === "restoring") settle();
+      set("holding");
+      cancelFill();
+      cancelFill = later(complete, HOLD);
+    };
+
+    const stop = () => {
+      if (state !== "holding") return;
+      cancelFill();
+      set("idle");
+    };
+
+    btn.addEventListener(
+      "pointerdown",
+      (e) => {
+        if (e.button !== 0) return;
+        start();
+      },
+      { signal },
+    );
+    for (const type of ["pointerup", "pointerleave", "pointercancel"]) {
+      btn.addEventListener(type, stop, { signal });
+    }
+    btn.addEventListener("blur", stop, { signal });
+    btn.addEventListener("contextmenu", (e) => e.preventDefault(), { signal });
+
+    const isHoldKey = (e) => e.key === " " || e.key === "Enter";
+    btn.addEventListener(
+      "keydown",
+      (e) => {
+        if (!isHoldKey(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (!e.repeat) start();
+      },
+      { signal },
+    );
+    btn.addEventListener(
+      "keyup",
+      (e) => {
+        if (!isHoldKey(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        stop();
+      },
+      { signal },
+    );
+
+    return {
+      async script() {
+        await wait(600);
+        await cursor.move(btn, { offset: { x: 22, y: 10 } });
+        await wait(250);
+
+        /* A scripted hold ends when the scripted hand lifts - including when
+           a visitor takes over mid-hold, or the fill would finish the delete
+           on its own with nobody pressing. */
+        const press = async (ms) => {
+          await cursor.press();
+          start();
+          try {
+            await wait(ms);
+          } finally {
+            stop();
+          }
+          await cursor.release();
+        };
+
+        // A hesitant hold: let go early and watch it spring back.
+        await press(620);
+        await wait(900);
+
+        // Commit.
+        await press(HOLD + 250);
+
+        await wait(RESTORE + 300);
+        await cursor.move({ x: 296, y: 244 });
+        await wait(500);
+      },
+      reset() {
+        cancelFill();
+        cancelRestore();
+        cancelSettle();
+        if (state === "done" || state === "restoring") restore();
+        else {
+          set("idle");
+          widthTo(W_IDLE);
+        }
+      },
+      destroy() {
+        widthAnim?.stop();
+      },
+    };
+  },
+});
+
+/* ==================================================================
+   挂载：画板按原尺寸放进 #demo，直接交给你操作，不跑演示脚本。
+   ================================================================== */
+
+{
+  const host = document.getElementById("demo");
+  // 底边裁在内容中间的 Demo（bleed）占满整个窗口：画板贴顶、向下长到窗口底边，和站点全屏试玩一样放大到 1.5 倍。
+  const bleed = demo.bleed === "bottom";
+  if (bleed) document.body.classList.add("bleed");
+  else {
+    host.style.aspectRatio = `${demo.width} / ${demo.height}`;
+    // 也按窗口高度收窄：矮窗口里整个画板缩小放下，而不是顶部被裁出窗口外。
+    host.style.maxWidth = `min(${demo.width}px, calc((100dvh - 32px) * ${demo.width} / ${demo.height}))`;
+  }
+  const background = demo.background ?? (demo.theme === "dark" ? "#111" : "#fff");
+  const controller = mountDemo(host, "hold-to-delete", demo, { live: true, autoplay: false, maxScale: bleed ? 1.5 : 1, focus: true });
+  // 渐变底色已经铺满整页；画板里再画一遍会在画板边缘留下一道硬边。
+  const artboard = host.querySelector(".demo-artboard");
+  if (artboard && background.includes("gradient(")) artboard.style.background = "none";
+  // 有的 Demo 会改自己的底色（比如切到暗色），页面跟着变。
+  controller.onSurface((surface) => (document.body.style.background = surface?.color ?? background));
+}
+</script>
+</body>
+</html>

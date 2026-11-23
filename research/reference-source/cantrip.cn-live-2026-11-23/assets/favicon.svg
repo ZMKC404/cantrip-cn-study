@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!-- Logo.astro's mark at 2/3 scale, without its guides: at 16px they only
+       blur. The square sits on whole pixels at both 32px and 16px (2..14,
+       10..22) so its edges stay sharp; the circle is still 1.11x the square
+       and the gap is still optical (2.93 at its nearest). -->
+  <style>
+    path { fill: #141414; }
+    @media (prefers-color-scheme: dark) { path { fill: #f2f2f2; } }
+  </style>
+  <path d="M2 10h12v12h-12Z M23.6 9.333A6.667 6.667 0 1 1 23.6 22.667A6.667 6.667 0 1 1 23.6 9.333Z"/>
+</svg>

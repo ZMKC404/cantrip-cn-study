@@ -1,0 +1,8 @@
+Captured: 2026-11-23
+Catalogue items: 99
+Feed pages: 5 per language (page 1 embedded in homepage)
+Direct detail pages: 99 per language
+Detail fragments: 99 per language
+Captured linked /play/ and /code/ routes; original response was 404 for 1 routes.
+Local assets: 174
+MP4 files remain linked to cantrip.cn; no form data is sent by this build script.
