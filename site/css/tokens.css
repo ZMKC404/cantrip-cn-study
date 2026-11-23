@@ -1,0 +1,114 @@
+/* ============================================================
+   Cantrip 复刻 · Design Tokens（原生重实现，非原站代码）
+   来源：对 cantrip.cn 公开样式的实测分析
+   ============================================================ */
+
+:root {
+  color-scheme: light;
+
+  /* 颜色 —— 暖纸色系 */
+  --bg: #faf8f4;
+  --card: #fff;
+  --fg: #1a1a1a;
+  --fg-2: #525252;
+  --fg-3: #6b665f;
+  --fg-4: #716c66;
+  --line: #e8e4dc;
+  --line-2: #d8d2c6;
+  --fill: #f3efe8;
+  --fill-2: #ebe6dc;
+  --stage: #f3f0ea;
+  --panel: #fff;
+  --accent: #1a1a1a;
+  --accent-fg: #fff;
+  --glass: #1414146b;
+
+  /* 阴影 —— 暖棕黑 alpha 变体 */
+  --edge: 0 0 0 1px #3c2c1412;
+  --shadow-sm: 0 1px 2px #3c2c140d;
+  --shadow-card: 0 1px 2px #3c2c1408, 0 12px 32px -18px #3c2c1438;
+  --shadow-pop: 0 0 0 1px #3c2c1412, 0 12px 32px -10px #3c2c1433, 0 2px 6px #3c2c140d;
+
+  /* 字体 —— 纯系统栈，零 webfont */
+  --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC",
+    "Hiragino Sans GB", "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* 缓动 */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* 布局尺寸 */
+  --rail: 320px;
+  --shell: 1520px;
+  --shell-x: max(0px, (100vw - var(--shell)) / 2);
+  --gutter: 16px;
+  --gap: 24px;
+  --content-left: calc(var(--shell-x) + var(--rail));
+  --content-right: calc(var(--shell-x) + var(--gutter));
+  --radius-card: 20px;
+  --mbar-h: calc(64px + env(safe-area-inset-top, 0px));
+}
+
+/* 全局基座 */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scrollbar-gutter: stable;
+  scroll-padding-top: 72px;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+::selection {
+  background: oklch(85% 0.1 250 / 0.5);
+}
+
+:focus-visible {
+  outline: 2px solid oklch(62% 0.19 255);
+  outline-offset: 2px;
+}
+
+/* 细滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg-3) 35%, transparent);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--fg-3) 55%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,71 @@
+<!-- ============================================================
+   新增一张作品卡：把本文件里任一 <article> 块整体复制，
+   粘到 replica/index.html 的 <div class="feed" data-feed-grid> 末尾即可。
+
+   masonry / 详情浮层 / 搜索 / 分类筛选 / 收录计数 全部自动接管，
+   唯一必改的是 5 个字段（下面标注 ★）。
+
+   data-category 取值必须是现有 chip 的值之一：
+     micro / component / interface / mobile / creative / principle
+   想加新分类 → 同时在 toolbar 里加一个 chip：
+     <a class="chip t-pill" href="./?c=你的值" data-chip="你的值">分类名</a>
+   ============================================================ -->
+
+<!-- ========== 形态 A：用截图/图片当卡面（最简单） ========== -->
+<!-- 1. 把图片放进 replica/assets/   2. 改 ★ 的 5 处 -->
+<article class="card"
+  data-card
+  data-slug="my-first-case"            <!-- ★ 唯一 slug，小写英文连字符，别重复 -->
+  data-category="mobile"               <!-- ★ 分类（见顶部说明） -->
+  data-tags="playful colorful auto"    <!-- 风格标签，空格分词，会进搜索索引 -->
+  data-order="11">                     <!-- 排序序号，越大越靠前（配合"最新"排序） -->
+  <a class="hit" data-open href="#i/my-first-case" aria-label="查看：你的标题"></a>
+  <div class="top"><div class="media" style="aspect-ratio:720/560">  <!-- ★ 宽高比，竖屏 720/900 -->
+    <img src="assets/your-shot.png" alt="" style="width:100%;height:100%;object-fit:cover">
+  </div></div>
+  <div class="text" data-frost>
+    <h2 class="title">你的标题</h2>          <!-- ★ -->
+    <p class="sub">一句话说清好在哪</p>
+    <div class="foot">
+      <p class="labels"><span>移动端</span></p>  <!-- ★ 和分类对应的中文名 -->
+      <div class="acts"><button class="act copy t-icon-btn" data-copy-prompt-for="my-first-case" aria-label="复制提示词" title="复制提示词">
+        <svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M200 32h-36.3a44.9 44.9 0 0 0-71.4 0H56a16 16 0 0 0-16 16v168a16 16 0 0 0 16 16h144a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16Z"/></svg>
+      </button></div>
+    </div>
+  </div>
+</article>
+
+<!-- ========== 形态 B：视频卡面（原站同款） ========== -->
+<!-- 原站真身：video preload=none 无 src，进视口才由 JS 赋 src 播放。
+     本复刻未引入视频懒加载模块，直接写 src 即可（muted loop playsinline）。 -->
+<!--
+  <div class="top"><div class="media" style="aspect-ratio:720/900">
+    <video src="assets/demo.mp4" poster="assets/demo-poster.webp"
+           muted loop playsinline style="width:100%;height:100%;object-fit:cover"></video>
+  </div></div>
+-->
+
+<!-- ========== 形态 C：CSS 自绘卡面（无资产、会动） ========== -->
+<!-- 参考现有卡片：art 容器里放任意 HTML/CSS，feed.css 里的 .art-* 系列可复用 -->
+<!--
+  <div class="top"><div class="media" style="aspect-ratio:720/480">
+    <div class="art art-toggle demo" aria-hidden="true"><div class="switch"></div></div>
+  </div></div>
+-->
+
+<!-- ============================================================
+   可选：给这张卡配完整详情页内容
+   打开 js/feed.js，在顶部 NOTES 对象里加一条（不配则自动用卡片标题+副题兜底）：
+
+   "my-first-case": {
+     title: "你的标题",
+     desc: "两三句描述：这是什么、解决什么、交互亮点。",
+     author: "你的名字",
+     date: "2026 年 11 月 22 日",
+     notes: ["设计要点一", "设计要点二", "设计要点三"],
+     meta: { "英文": "English Name", "风格": "趣味", "色调": "多彩" },
+   },
+
+   提示词（复制按钮吐出的内容）在 js/ui.js 的 copyText 分支里拼装；
+   想自定义文案可把 data-copy-prompt-for 换成 data-gate="prompt" data-copy-prompt="你的完整提示词"。
+   ============================================================ -->
